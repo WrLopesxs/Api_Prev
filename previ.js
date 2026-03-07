@@ -1,71 +1,66 @@
-﻿// POR ESTA (apenas para teste local):
-const API_URL = 'https://script.google.com/macros/s/AKfycbw44AWco0xaVegRU-19DJI8Qd8dijZxJdnzMCfehFuY-yOkTDVFNldZ-RVelDgD1qa-lw/exec';
+
+const API_URL = 'https://script.google.com/macros/s/AKfycbzbXBOkRN2YiYremndvUXKXbvMAbqkJRPV8NvJEssARPoScg_bX5ysWbUrgZegEQ1FOGw/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
-const AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
-const AUTO_REFRESH_TICK_MS = 1000;
 
 let dadosCompletos = [];
 let dadosFiltrados = [];
+let modalTrendChart = null;
+let modoVisualizacao = 'cards';
+let ordenacaoTabela = { campo: 'dataFim', direcao: 'asc' };
+let autoRefreshTimer = null;
+let autoRefreshIntervalSeconds = 0;
+let autoRefreshPausado = false;
+let autoRefreshStartedAt = null;
+let autoRefreshProgressTimer = null;
+
 let filtros = {
     modelo: 'todos',
     turno: 'todos',
     status: 'todos',
-    ordem: 'desc'
+    ordem: 'urgencia',
+    busca: ''
 };
-let autoRefreshAtivo = true;
-let autoRefreshIntervalId = null;
-let tempoRestanteAutoMs = AUTO_REFRESH_INTERVAL_MS;
-let inicioCicloAutoMs = Date.now();
-let carregamentoEmAndamento = false;
-let modoVisualizacao = 'cards';
-let referenciaCalculoMs = Date.now();
 
 const ultimaAtualizacaoEl = document.getElementById('ultimaAtualizacao');
 const cardsContainer = document.getElementById('cardsContainer');
 const btnAtualizar = document.getElementById('btnAtualizar');
+const btnLimparFiltros = document.getElementById('btnLimparFiltros');
+const btnExportarPdf = document.getElementById('btnExportarPdf');
+const btnModoVisao = document.getElementById('btnModoVisao');
+const btnPausarAutoRefresh = document.getElementById('btnPausarAutoRefresh');
+const autoRefreshSelect = document.getElementById('autoRefreshSelect');
+const autoRefreshStatus = document.getElementById('autoRefreshStatus');
+const autoRefreshCountdown = document.getElementById('autoRefreshCountdown');
+const autoRefreshProgressBar = document.getElementById('autoRefreshProgressBar');
+const buscaInput = document.getElementById('buscaInput');
+const resultadoContadorEl = document.getElementById('resultadoContador');
+
 const filtroModeloEl = document.getElementById('filtroModelo');
 const filtroTurnoEl = document.getElementById('filtroTurno');
 const filtroStatusEl = document.getElementById('filtroStatus');
 const filtroOrdemEl = document.getElementById('filtroOrdem');
+
 const kpiTotal = document.getElementById('kpiTotal');
 const kpiCritico = document.getElementById('kpiCritico');
 const kpiAtencao = document.getElementById('kpiAtencao');
 const kpiNormal = document.getElementById('kpiNormal');
+
 const modalDetalhes = document.getElementById('modalDetalhes');
 const modalTitulo = document.getElementById('modalTitulo');
 const modalBody = document.getElementById('modalBody');
+
 const btnTema = document.getElementById('btnTema');
 const temaIcone = document.getElementById('temaIcone');
 const temaLabel = document.getElementById('temaLabel');
-const btnPausarAuto = document.getElementById('btnPausarAuto');
-const barraAutoRefresh = document.getElementById('barraAutoRefresh');
-const tempoRestanteAutoEl = document.getElementById('tempoRestanteAuto');
-const statusAutoRefreshEl = document.getElementById('statusAutoRefresh');
-const btnAlternarVisualizacao = document.getElementById('btnAlternarVisualizacao');
-const tabelaContainer = document.getElementById('tabelaContainer');
-const btnImprimirTabela = document.getElementById('btnImprimirTabela');
 
 document.addEventListener('DOMContentLoaded', () => {
     inicializarTema();
     configurarEventos();
-    iniciarAutoRefresh();
     carregarDados();
 });
 
 function configurarEventos() {
-    btnAtualizar.addEventListener('click', atualizarAgora);
-
-    if (btnPausarAuto) {
-        btnPausarAuto.addEventListener('click', alternarAutoRefresh);
-    }
-
-    if (btnAlternarVisualizacao) {
-        btnAlternarVisualizacao.addEventListener('click', alternarVisualizacao);
-    }
-
-    if (btnImprimirTabela) {
-        btnImprimirTabela.addEventListener('click', imprimirTabelaFiltrada);
-    }
+    btnAtualizar.addEventListener('click', carregarDados);
 
     filtroModeloEl.addEventListener('click', (e) => {
         if (e.target.classList.contains('filtro-btn')) {
@@ -91,6 +86,28 @@ function configurarEventos() {
         }
     });
 
+    buscaInput.addEventListener('input', (e) => {
+        filtros.busca = e.target.value.trim();
+        aplicarFiltros();
+    });
+
+    btnLimparFiltros.addEventListener('click', limparFiltros);
+    btnExportarPdf.addEventListener('click', exportarPDF);
+    btnPausarAutoRefresh.addEventListener('click', alternarPausaAutoRefresh);
+
+    autoRefreshSelect.addEventListener('change', (e) => {
+        autoRefreshIntervalSeconds = Number(e.target.value) || 0;
+        autoRefreshPausado = false;
+        atualizarBotaoAutoRefresh();
+        configurarAutoRefresh();
+    });
+
+    btnModoVisao.addEventListener('click', () => {
+        modoVisualizacao = modoVisualizacao === 'cards' ? 'tabela' : 'cards';
+        atualizarTextoModoVisao();
+        renderizarCards(obterTopUrgentes(dadosFiltrados));
+    });
+
     if (btnTema) {
         btnTema.addEventListener('click', alternarTema);
     }
@@ -107,21 +124,20 @@ function configurarEventos() {
         }
     });
 
-    atualizarBotaoVisualizacao();
+    atualizarTextoModoVisao();
+    atualizarBotaoAutoRefresh();
 }
 
 function inicializarTema() {
     const temaSalvo = localStorage.getItem(STORAGE_THEME_KEY);
     const prefereEscuro = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const temaInicial = temaSalvo || (prefereEscuro ? 'dark' : 'light');
-
     aplicarTema(temaInicial, false);
 }
 
 function alternarTema() {
     const temaAtual = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
     const proximoTema = temaAtual === 'dark' ? 'light' : 'dark';
-
     aplicarTema(proximoTema, true);
 }
 
@@ -150,116 +166,7 @@ function atualizarBotaoTema(tema) {
     }
 }
 
-function atualizarAgora() {
-    reiniciarContagemAutoRefresh();
-    carregarDados();
-}
-
-function alternarVisualizacao() {
-    modoVisualizacao = modoVisualizacao === 'cards' ? 'tabela' : 'cards';
-    atualizarBotaoVisualizacao();
-    aplicarFiltros();
-}
-
-function atualizarBotaoVisualizacao() {
-    if (!btnAlternarVisualizacao) {
-        return;
-    }
-
-    if (modoVisualizacao === 'cards') {
-        btnAlternarVisualizacao.textContent = '📋 Ver tabela';
-        return;
-    }
-
-    btnAlternarVisualizacao.textContent = '🧩 Ver cards';
-}
-
-function iniciarAutoRefresh() {
-    reiniciarContagemAutoRefresh();
-
-    if (autoRefreshIntervalId) {
-        clearInterval(autoRefreshIntervalId);
-    }
-
-    autoRefreshIntervalId = setInterval(processarAutoRefresh, AUTO_REFRESH_TICK_MS);
-    atualizarEstadoAutoRefreshUI();
-}
-
-function processarAutoRefresh() {
-    if (!autoRefreshAtivo) {
-        return;
-    }
-
-    const decorridoMs = Date.now() - inicioCicloAutoMs;
-    tempoRestanteAutoMs = Math.max(AUTO_REFRESH_INTERVAL_MS - decorridoMs, 0);
-
-    if (tempoRestanteAutoMs <= 0) {
-        reiniciarContagemAutoRefresh();
-        carregarDados();
-        return;
-    }
-
-    atualizarEstadoAutoRefreshUI();
-}
-
-function alternarAutoRefresh() {
-    autoRefreshAtivo = !autoRefreshAtivo;
-
-    if (autoRefreshAtivo) {
-        if (tempoRestanteAutoMs <= 0 || tempoRestanteAutoMs > AUTO_REFRESH_INTERVAL_MS) {
-            tempoRestanteAutoMs = AUTO_REFRESH_INTERVAL_MS;
-        }
-
-        inicioCicloAutoMs = Date.now() - (AUTO_REFRESH_INTERVAL_MS - tempoRestanteAutoMs);
-    }
-
-    atualizarEstadoAutoRefreshUI();
-}
-
-function reiniciarContagemAutoRefresh() {
-    inicioCicloAutoMs = Date.now();
-    tempoRestanteAutoMs = AUTO_REFRESH_INTERVAL_MS;
-    atualizarEstadoAutoRefreshUI();
-}
-
-function atualizarEstadoAutoRefreshUI() {
-    if (tempoRestanteAutoEl) {
-        tempoRestanteAutoEl.textContent = formatarTempoRestante(tempoRestanteAutoMs);
-    }
-
-    if (barraAutoRefresh) {
-        const porcentagem = Math.max(0, Math.min(100, (tempoRestanteAutoMs / AUTO_REFRESH_INTERVAL_MS) * 100));
-        barraAutoRefresh.style.width = `${porcentagem}%`;
-        barraAutoRefresh.classList.toggle('pausado', !autoRefreshAtivo);
-    }
-
-    if (statusAutoRefreshEl) {
-        statusAutoRefreshEl.textContent = autoRefreshAtivo
-            ? 'Atualização automática ativa'
-            : 'Atualização automática pausada';
-    }
-
-    if (btnPausarAuto) {
-        btnPausarAuto.classList.toggle('pausado', !autoRefreshAtivo);
-        btnPausarAuto.textContent = autoRefreshAtivo
-            ? '⏸ Pausar atualização automática'
-            : '▶ Retomar atualização automática';
-    }
-}
-
-function formatarTempoRestante(tempoMs) {
-    const totalSegundos = Math.max(0, Math.ceil(tempoMs / 1000));
-    const minutos = Math.floor(totalSegundos / 60);
-    const segundos = totalSegundos % 60;
-    return `${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`;
-}
-
 async function carregarDados() {
-    if (carregamentoEmAndamento) {
-        return;
-    }
-
-    carregamentoEmAndamento = true;
     mostrarLoading(true);
 
     try {
@@ -293,7 +200,6 @@ async function carregarDados() {
         mostrarErro('Erro de conexão com a API. Tente novamente.');
     } finally {
         mostrarLoading(false);
-        carregamentoEmAndamento = false;
     }
 }
 
@@ -308,7 +214,7 @@ function atualizarFiltrosModelo(modelos) {
 
     modelos.forEach((modelo) => {
         const ativo = filtros.modelo === modelo ? 'ativo' : '';
-        html.push(`<button class="filtro-btn ${ativo}" data-modelo="${modelo}">${modelo}</button>`);
+        html.push(`<button class="filtro-btn ${ativo}" data-modelo="${escapeHtml(modelo)}">${escapeHtml(modelo)}</button>`);
     });
 
     filtroModeloEl.innerHTML = html.join('');
@@ -324,48 +230,87 @@ function atualizarFiltro(tipo, valor) {
         ordem: { container: filtroOrdemEl, dataAttr: 'ordem' }
     };
 
-    const { container, dataAttr } = config[tipo];
+    const itemConfig = config[tipo];
+    if (itemConfig?.container) {
+        const { container, dataAttr } = itemConfig;
 
-    container.querySelectorAll('.filtro-btn').forEach((btn) => {
-        btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
-    });
+        container.querySelectorAll('.filtro-btn').forEach((btn) => {
+            btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
+        });
+    }
 
     aplicarFiltros();
 }
 
 function aplicarFiltros() {
-    referenciaCalculoMs = Date.now();
-
-    dadosFiltrados = dadosCompletos.filter((item) => {
-        if (!itemPodeSerExibido(item)) {
-            return false;
-        }
-
-        if (filtros.modelo !== 'todos' && item.modelo !== filtros.modelo) {
-            return false;
-        }
-
-        if (filtros.turno !== 'todos' && String(item.turnoPrevisto) !== String(filtros.turno)) {
-            return false;
-        }
-
-        if (filtros.status !== 'todos' && normalizarStatus(item.status) !== normalizarStatus(filtros.status)) {
-            return false;
-        }
-
-        return true;
-    });
-
+    dadosFiltrados = dadosCompletos.filter((item) => itemPassaFiltros(item));
     ordenarDadosFiltrados();
+
+    const topUrgentes = obterTopUrgentes(dadosFiltrados);
+
     atualizarKPIs();
-    renderizarVisualizacao();
+    atualizarContadorResultados();
+    renderizarCards(topUrgentes);
+}
+
+function itemPassaFiltros(item, opcoes = {}) {
+    const {
+        ignorarStatus = false,
+        ignorarTurno = false,
+        ignorarBusca = false,
+        ignorarModelo = false
+    } = opcoes;
+
+    if (!itemPodeSerExibido(item)) {
+        return false;
+    }
+
+    if (!ignorarModelo && filtros.modelo !== 'todos' && item.modelo !== filtros.modelo) {
+        return false;
+    }
+
+    if (!ignorarTurno && filtros.turno !== 'todos' && String(item.turnoPrevisto) !== String(filtros.turno)) {
+        return false;
+    }
+
+    const statusInfo = classificarCriticidade(item);
+    if (!ignorarStatus && filtros.status !== 'todos' && statusInfo.grupo !== filtros.status) {
+        return false;
+    }
+
+    if (!ignorarBusca && filtros.busca) {
+        const busca = normalizarTexto(filtros.busca);
+        const campos = [item.pn, item.modelo, item.linha, statusInfo.label, statusInfo.grupo];
+        const encontrou = campos.some((campo) => normalizarTexto(campo).includes(busca));
+        if (!encontrou) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function ordenarDadosFiltrados() {
     dadosFiltrados.sort((a, b) => {
-        if (modoVisualizacao === 'tabela') {
-            const dataA = obterTimestampPrevisao(a);
-            const dataB = obterTimestampPrevisao(b);
+        const statusA = classificarCriticidade(a);
+        const statusB = classificarCriticidade(b);
+        const dataA = obterTimestampSeguro(a?.dataFim);
+        const dataB = obterTimestampSeguro(b?.dataFim);
+
+        if (statusA.grupo === 'sem-consumo' && statusB.grupo !== 'sem-consumo') {
+            return 1;
+        }
+
+        if (statusA.grupo !== 'sem-consumo' && statusB.grupo === 'sem-consumo') {
+            return -1;
+        }
+
+        if (filtros.ordem === 'urgencia') {
+            const autonomiaA = numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY);
+            const autonomiaB = numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY);
+            if (autonomiaA !== autonomiaB) {
+                return autonomiaA - autonomiaB;
+            }
 
             if (dataA === null && dataB === null) {
                 return 0;
@@ -381,9 +326,6 @@ function ordenarDadosFiltrados() {
 
             return dataA - dataB;
         }
-
-        const dataA = obterTimestampPrevisao(a);
-        const dataB = obterTimestampPrevisao(b);
 
         if (dataA === null && dataB === null) {
             return 0;
@@ -405,24 +347,26 @@ function ordenarDadosFiltrados() {
     });
 }
 
-function renderizarVisualizacao() {
-    if (modoVisualizacao === 'tabela') {
-        cardsContainer.classList.add('hidden');
-        tabelaContainer.classList.remove('hidden');
-        renderizarTabela();
-        return;
-    }
+function obterTopUrgentes(lista) {
+    const criticos = lista.filter((item) => classificarCriticidade(item).grupo === 'critico');
+    const base = criticos.length > 0 ? criticos : lista;
 
-    tabelaContainer.classList.add('hidden');
-    cardsContainer.classList.remove('hidden');
-    renderizarCards();
+    const top = [...base]
+        .sort((a, b) => numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY) - numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY))
+        .slice(0, 3);
+
+    const mapa = new Map();
+    top.forEach((item, index) => {
+        mapa.set(String(item.pn), index + 1);
+    });
+
+    return mapa;
 }
-
 function atualizarKPIs() {
     const total = dadosFiltrados.length;
-    const criticos = dadosFiltrados.filter(item => normalizarStatus(item.status) === 'critico').length;
-    const atencao = dadosFiltrados.filter(item => normalizarStatus(item.status) === 'atencao').length;
-    const normal = dadosFiltrados.filter(item => normalizarStatus(item.status) === 'normal').length;
+    const criticos = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'critico').length;
+    const atencao = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'atencao').length;
+    const normal = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'normal').length;
 
     kpiTotal.textContent = total;
     kpiCritico.textContent = criticos;
@@ -430,199 +374,66 @@ function atualizarKPIs() {
     kpiNormal.textContent = normal;
 }
 
-function renderizarCards() {
+function atualizarContadorResultados() {
+    resultadoContadorEl.textContent = `${dadosFiltrados.length} resultado(s)`;
+}
+function renderizarCards(topUrgentes) {
     if (dadosFiltrados.length === 0) {
+        cardsContainer.classList.remove('modo-tabela');
         cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item encontrado com os filtros atuais.</div>';
         return;
     }
 
-    cardsContainer.innerHTML = dadosFiltrados.map(item => criarCardHTML(item)).join('');
+    if (modoVisualizacao === 'tabela') {
+        renderizarTabela(topUrgentes);
+        return;
+    }
 
-    document.querySelectorAll('.pn-card').forEach((card) => {
+    cardsContainer.classList.remove('modo-tabela');
+    cardsContainer.innerHTML = dadosFiltrados.map(item => criarCardHTML(item, topUrgentes)).join('');
+
+    cardsContainer.querySelectorAll('.pn-card').forEach((card) => {
         card.addEventListener('click', () => abrirModal(card.dataset.pn));
     });
 }
 
-function renderizarTabela() {
-    if (dadosFiltrados.length === 0) {
-        tabelaContainer.innerHTML = '<div class="loading-cards">Nenhum item encontrado com os filtros atuais.</div>';
-        return;
-    }
-
-    const linhas = dadosFiltrados.map((item) => {
-        const previsao = obterPrevisaoComDiasUteis(item);
-        const dataFim = previsao.dataFim;
-        const autonomiaHoras = previsao.autonomiaHoras;
-        const statusInfo = obterStatusInfo(item.status);
-
-        return `
-            <tr class="linha-tabela" data-pn="${item.pn}">
-                <td>${item.pn}</td>
-                <td>${item.modelo || '-'}</td>
-                <td>${item.estoque}</td>
-                <td>${Number(item.consumo || 0).toFixed(1)}</td>
-                <td>${autonomiaHoras}h</td>
-                <td>${formatarDataHora(dataFim)}</td>
-                <td>${item.turnoPrevisto}º</td>
-                <td><span class="status-chip ${statusInfo.classe}">${statusInfo.icone} ${statusInfo.label}</span></td>
-            </tr>
-        `;
-    }).join('');
-
-    tabelaContainer.innerHTML = `
-        <div class="tabela-scroll">
-            <table class="pn-tabela">
-                <thead>
-                    <tr>
-                        <th>PN</th>
-                        <th>Modelo</th>
-                        <th>Estoque</th>
-                        <th>Consumo/h</th>
-                        <th>Autonomia</th>
-                        <th>Acaba em</th>
-                        <th>Turno</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${linhas}
-                </tbody>
-            </table>
-        </div>
-    `;
-
-    tabelaContainer.querySelectorAll('.linha-tabela').forEach((linha) => {
-        linha.addEventListener('click', () => abrirModal(linha.dataset.pn));
-    });
-}
-
-function imprimirTabelaFiltrada() {
-    if (!Array.isArray(dadosFiltrados) || dadosFiltrados.length === 0) {
-        alert('Não há dados para imprimir com os filtros atuais.');
-        return;
-    }
-
-    const linhas = dadosFiltrados.map((item) => {
-        const previsao = obterPrevisaoComDiasUteis(item);
-        const dataFim = previsao.dataFim;
-        const autonomiaHoras = previsao.autonomiaHoras;
-        const statusInfo = obterStatusInfo(item.status);
-
-        return `
-            <tr>
-                <td>${item.pn}</td>
-                <td>${item.modelo || '-'}</td>
-                <td>${item.estoque}</td>
-                <td>${Number(item.consumo || 0).toFixed(1)}</td>
-                <td>${autonomiaHoras}h</td>
-                <td>${formatarDataHora(dataFim)}</td>
-                <td>${item.turnoPrevisto}º</td>
-                <td>${statusInfo.label}</td>
-            </tr>
-        `;
-    }).join('');
-
-    const agora = new Date();
-    const popup = window.open('', '_blank');
-
-    if (!popup) {
-        alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.');
-        return;
-    }
-
-    popup.document.write(`
-        <!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-            <meta charset="UTF-8">
-            <title>Tabela - Dashboard Toyota</title>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    margin: 20px;
-                    color: #111827;
-                }
-                h1 {
-                    font-size: 20px;
-                    margin-bottom: 8px;
-                }
-                .meta {
-                    font-size: 12px;
-                    color: #4b5563;
-                    margin-bottom: 14px;
-                }
-                table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    font-size: 12px;
-                }
-                th, td {
-                    border: 1px solid #d1d5db;
-                    padding: 8px;
-                    text-align: left;
-                }
-                th {
-                    background: #f3f4f6;
-                    font-weight: 700;
-                }
-                @media print {
-                    body {
-                        margin: 10mm;
-                    }
-                }
-            </style>
-        </head>
-        <body>
-            <h1>Toyota - Tabela de Previsão</h1>
-            <div class="meta">Gerado em: ${formatarDataHora(agora)} | Total de itens: ${dadosFiltrados.length}</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>PN</th>
-                        <th>Modelo</th>
-                        <th>Estoque</th>
-                        <th>Consumo/h</th>
-                        <th>Autonomia</th>
-                        <th>Acaba em</th>
-                        <th>Turno</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${linhas}
-                </tbody>
-            </table>
-        </body>
-        </html>
-    `);
-
-    popup.document.close();
-    popup.focus();
-    popup.print();
-}
-
-function criarCardHTML(item) {
-    const previsao = obterPrevisaoComDiasUteis(item);
-    const dataFim = previsao.dataFim;
-    const autonomiaHoras = previsao.autonomiaHoras;
+function criarCardHTML(item, topUrgentes) {
+    const dataFim = new Date(item.dataFim);
+    const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
     const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
-    const statusInfo = obterStatusInfo(item.status);
+    const statusInfo = classificarCriticidade(item);
+    const rankUrgencia = topUrgentes.get(String(item.pn));
+    const termoBusca = filtros.busca;
+
+    const classes = [
+        'pn-card',
+        statusInfo.grupo,
+        statusInfo.classeFaixa,
+        rankUrgencia ? 'urgente' : ''
+    ].filter(Boolean).join(' ');
+
+    const badgeUrgente = rankUrgencia
+        ? `<span class="urgente-badge">TOP ${rankUrgencia} URGENTE</span>`
+        : '';
 
     return `
-        <article class="pn-card ${statusInfo.classe}" data-pn="${item.pn}">
-            <div class="pn-header">
-                <span class="pn-nome">${item.pn}</span>
-                <span class="pn-modelo">${item.modelo}</span>
+        <article class="${classes}" id="card-${criarIdSeguro(item.pn)}" data-pn="${escapeHtml(item.pn)}">
+            <div class="pn-topbar">
+                <div class="pn-header">
+                    <span class="pn-nome">${destacarTexto(item.pn, termoBusca)}</span>
+                </div>
+                ${badgeUrgente}
+                <span class="pn-modelo">${destacarTexto(item.modelo, termoBusca)}</span>
             </div>
 
             <div class="pn-info">
                 <div class="info-item">
                     <div class="info-label">Estoque</div>
-                    <div class="info-value">${item.estoque}</div>
+                    <div class="info-value">${numeroSeguro(item.estoque)}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Consumo/h</div>
-                    <div class="info-value">${Number(item.consumo || 0).toFixed(1)}</div>
+                    <div class="info-value">${numeroSeguro(item.consumo).toFixed(1)}</div>
                 </div>
             </div>
 
@@ -637,28 +448,138 @@ function criarCardHTML(item) {
                 </div>
                 <div class="previsao-item">
                     <span class="previsao-label">Turno:</span>
-                    <span class="pn-turno">${item.turnoPrevisto}º Turno</span>
+                    <span class="pn-turno">${escapeHtml(String(item.turnoPrevisto))}º Turno</span>
                 </div>
             </div>
 
-            <div class="pn-status ${statusInfo.classe}">
-                ${statusInfo.icone} ${statusInfo.label.toUpperCase()} ${statusInfo.icone}
+            <div class="pn-status ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
+                ${destacarTexto(`${statusInfo.icones} ${statusInfo.label.toUpperCase()}`, termoBusca)}
             </div>
         </article>
     `;
 }
 
+function renderizarTabela(topUrgentes) {
+    cardsContainer.classList.add('modo-tabela');
+
+    const dadosTabela = [...dadosFiltrados];
+    ordenarDadosTabela(dadosTabela);
+
+    const setaCampo = (campo) => {
+        if (ordenacaoTabela.campo !== campo) {
+            return '';
+        }
+
+        return ordenacaoTabela.direcao === 'asc' ? ' ▲' : ' ▼';
+    };
+
+    const linhas = dadosTabela.map((item) => {
+        const statusInfo = classificarCriticidade(item);
+        const rankUrgencia = topUrgentes.get(String(item.pn));
+        const termoBusca = filtros.busca;
+
+        return `
+            <tr class="linha-tabela ${rankUrgencia ? 'linha-urgente' : ''}" data-pn="${escapeHtml(item.pn)}">
+                <td>${rankUrgencia ? `TOP ${rankUrgencia}` : '-'}</td>
+                <td>${destacarTexto(item.pn, termoBusca)}</td>
+                <td>${destacarTexto(item.modelo, termoBusca)}</td>
+                <td>${numeroSeguro(item.estoque)}</td>
+                <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
+                <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
+                <td>${formatarDataHora(new Date(item.dataFim))}</td>
+                <td>${escapeHtml(String(item.turnoPrevisto))}º</td>
+                <td><span class="status-cell pn-status ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">${destacarTexto(`${statusInfo.icones} ${statusInfo.label}`, termoBusca)}</span></td>
+            </tr>
+        `;
+    }).join('');
+
+    cardsContainer.innerHTML = `
+        <div class="tabela-wrapper">
+            <table class="tabela-lista">
+                <thead>
+                    <tr>
+                        <th data-sort="urgencia">Urgência${setaCampo('urgencia')}</th>
+                        <th data-sort="pn">PN${setaCampo('pn')}</th>
+                        <th data-sort="modelo">Modelo${setaCampo('modelo')}</th>
+                        <th data-sort="estoque">Estoque${setaCampo('estoque')}</th>
+                        <th data-sort="consumo">Consumo/h${setaCampo('consumo')}</th>
+                        <th data-sort="autonomiaHoras">Autonomia${setaCampo('autonomiaHoras')}</th>
+                        <th data-sort="dataFim">Previsão${setaCampo('dataFim')}</th>
+                        <th data-sort="turnoPrevisto">Turno${setaCampo('turnoPrevisto')}</th>
+                        <th data-sort="status">Status${setaCampo('status')}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${linhas}
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    cardsContainer.querySelectorAll('.linha-tabela').forEach((linha) => {
+        linha.addEventListener('click', () => abrirModal(linha.dataset.pn));
+    });
+
+    cardsContainer.querySelectorAll('th[data-sort]').forEach((th) => {
+        th.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const campo = th.dataset.sort;
+            if (ordenacaoTabela.campo === campo) {
+                ordenacaoTabela.direcao = ordenacaoTabela.direcao === 'asc' ? 'desc' : 'asc';
+            } else {
+                ordenacaoTabela.campo = campo;
+                ordenacaoTabela.direcao = 'asc';
+            }
+
+            renderizarTabela(topUrgentes);
+        });
+    });
+}
+
+function ordenarDadosTabela(lista) {
+    const { campo, direcao } = ordenacaoTabela;
+
+    lista.sort((a, b) => {
+        let valorA;
+        let valorB;
+
+        if (campo === 'status') {
+            valorA = classificarCriticidade(a).label;
+            valorB = classificarCriticidade(b).label;
+        } else if (campo === 'urgencia') {
+            valorA = numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY);
+            valorB = numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY);
+        } else if (campo === 'dataFim') {
+            valorA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
+            valorB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
+        } else if (['estoque', 'consumo', 'autonomiaHoras', 'turnoPrevisto'].includes(campo)) {
+            valorA = numeroSeguro(a[campo], Number.POSITIVE_INFINITY);
+            valorB = numeroSeguro(b[campo], Number.POSITIVE_INFINITY);
+        } else {
+            valorA = normalizarTexto(a[campo]);
+            valorB = normalizarTexto(b[campo]);
+        }
+
+        if (typeof valorA === 'string' || typeof valorB === 'string') {
+            const comparacao = String(valorA).localeCompare(String(valorB), 'pt-BR');
+            return direcao === 'asc' ? comparacao : -comparacao;
+        }
+
+        const comparacao = valorA - valorB;
+        return direcao === 'asc' ? comparacao : -comparacao;
+    });
+}
 function abrirModal(pn) {
     const item = dadosCompletos.find((dado) => String(dado.pn) === String(pn));
     if (!item) {
         return;
     }
 
-    const previsao = obterPrevisaoComDiasUteis(item);
-    const dataFim = previsao.dataFim;
-    const autonomiaHoras = previsao.autonomiaHoras;
+    const dataFim = new Date(item.dataFim);
+    const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
     const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
-    const statusInfo = obterStatusInfo(item.status);
+    const statusInfo = classificarCriticidade(item);
+    const serieEstoque = gerarSerieEstoqueReal(item);
 
     modalTitulo.textContent = item.pn;
 
@@ -667,11 +588,11 @@ function abrirModal(pn) {
             <div class="modal-grid">
                 <div class="detail-box center">
                     <div class="detail-caption">Modelo</div>
-                    <div class="detail-value">${item.modelo}</div>
+                    <div class="detail-value">${escapeHtml(item.modelo)}</div>
                 </div>
                 <div class="detail-box center">
                     <div class="detail-caption">Linha</div>
-                    <div class="detail-value">${item.linha}</div>
+                    <div class="detail-value">${escapeHtml(item.linha || '-')}</div>
                 </div>
             </div>
 
@@ -679,15 +600,35 @@ function abrirModal(pn) {
                 <h4>Detalhes do estoque</h4>
                 <div class="detail-row">
                     <span>Quantidade atual:</span>
-                    <strong>${item.estoque} peças</strong>
+                    <strong>${numeroSeguro(item.estoque)} peças</strong>
                 </div>
                 <div class="detail-row">
                     <span>Consumo por hora:</span>
-                    <strong>${Number(item.consumo || 0).toFixed(1)} peças/h</strong>
+                    <strong>${numeroSeguro(item.consumo).toFixed(1)} peças/h</strong>
                 </div>
                 <div class="detail-row">
                     <span>Autonomia:</span>
-                    <strong>${autonomiaHoras} horas (${autonomiaDias} dias)</strong>
+                    <strong>${autonomiaHoras.toFixed(1)} horas (${autonomiaDias} dias)</strong>
+                </div>
+            </div>
+
+            <div class="trend-chart-wrap">
+                <h4>📉 Queda do estoque até o esgotamento</h4>
+                <div class="trend-chart-subtitle">Estoque real projetado até ${escapeHtml(formatarDataHora(dataFim))}</div>
+                <canvas id="modalTrendChart" aria-label="Gráfico de tendência"></canvas>
+                <div class="trend-stats">
+                    <div class="trend-stat">
+                        <span class="trend-stat-label">Estoque atual</span>
+                        <span class="trend-stat-value">${serieEstoque.estoqueInicial.toFixed(0)} peças</span>
+                    </div>
+                    <div class="trend-stat">
+                        <span class="trend-stat-label">Consumo real</span>
+                        <span class="trend-stat-value">${serieEstoque.consumoHora.toFixed(2)} p/h</span>
+                    </div>
+                    <div class="trend-stat">
+                        <span class="trend-stat-label">Fim previsto</span>
+                        <span class="trend-stat-value">${escapeHtml(serieEstoque.fimPrevisto)}</span>
+                    </div>
                 </div>
             </div>
 
@@ -703,42 +644,473 @@ function abrirModal(pn) {
                 </div>
                 <div class="detail-row">
                     <span>Turno:</span>
-                    <strong>${item.turnoPrevisto}º Turno</strong>
+                    <strong>${escapeHtml(String(item.turnoPrevisto))}º Turno</strong>
                 </div>
             </div>
 
-            <div class="status-box ${statusInfo.classe}">
-                Status: ${statusInfo.icone} ${statusInfo.label.toUpperCase()}
+            <div class="status-box ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
+                Status: ${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label.toUpperCase())}
             </div>
         </div>
     `;
 
     modalDetalhes.classList.add('mostrar');
+    renderizarGraficoEstoqueReal(serieEstoque);
+}
+
+function renderizarGraficoEstoqueReal(serieEstoque) {
+    if (typeof Chart === 'undefined') {
+        return;
+    }
+
+    const canvas = document.getElementById('modalTrendChart');
+    if (!canvas) {
+        return;
+    }
+
+    if (modalTrendChart) {
+        modalTrendChart.destroy();
+    }
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
+
+    modalTrendChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: serieEstoque.labels,
+            datasets: [
+                {
+                    label: 'Estoque restante',
+                    data: serieEstoque.valores,
+                    borderColor: '#3b9dff',
+                    backgroundColor: 'rgba(59, 157, 255, 0.15)',
+                    tension: 0,
+                    fill: true,
+                    pointRadius: 2.2,
+                    pointHoverRadius: 4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: textColor,
+                        font: { size: 11, weight: 700 }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (context) => `Estoque: ${Number(context.parsed.y).toFixed(0)} peças`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        color: textColor,
+                        maxTicksLimit: 8
+                    },
+                    grid: {
+                        color: 'rgba(120, 140, 170, 0.18)'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: textColor },
+                    grid: {
+                        color: 'rgba(120, 140, 170, 0.18)'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Peças em estoque',
+                        color: textColor
+                    }
+                }
+            }
+        }
+    });
 }
 
 function fecharModal() {
     modalDetalhes.classList.remove('mostrar');
+    if (modalTrendChart) {
+        modalTrendChart.destroy();
+        modalTrendChart = null;
+    }
 }
 
-function obterStatusInfo(status) {
-    const statusNormalizado = normalizarStatus(status);
+function classificarCriticidade(item) {
+    const estoque = numeroSeguro(item.estoque, 0);
+    const consumo = numeroSeguro(item.consumo, 0);
+    const autonomia = numeroSeguro(item.autonomiaHoras, 0);
 
-    if (statusNormalizado === 'critico') {
-        return { classe: 'critico', icone: '🔴', label: 'Crítico' };
+    if (estoque > 0 && consumo <= 0) {
+        return {
+            grupo: 'sem-consumo',
+            classeFaixa: 'sem-consumo-faixa',
+            label: 'Sem consumo',
+            icones: '⚪ ⏸',
+            tooltip: 'Item com estoque disponível, mas sem consumo registrado'
+        };
     }
 
-    if (statusNormalizado === 'atencao') {
-        return { classe: 'atencao', icone: '🟡', label: 'Atenção' };
+    if (autonomia <= 0) {
+        return {
+            grupo: 'esgotado',
+            classeFaixa: 'esgotado-faixa',
+            label: 'Esgotado',
+            icones: '⚫ ❌',
+            tooltip: 'Item esgotado'
+        };
     }
 
-    return { classe: 'normal', icone: '🟢', label: 'Normal' };
+    if (autonomia < 4) {
+        return {
+            grupo: 'critico',
+            classeFaixa: 'critico-extremo',
+            label: 'Crítico <4h',
+            icones: '🔴 ⚠️',
+            tooltip: 'Nível máximo de urgência (menor que 4h)'
+        };
+    }
+
+    if (autonomia < 8) {
+        return {
+            grupo: 'atencao',
+            classeFaixa: 'atencao-faixa',
+            label: 'Atenção 4-8h',
+            icones: '🟡 ⏳',
+            tooltip: 'Acompanhar de perto (4h a 8h)'
+        };
+    }
+
+    return {
+        grupo: 'normal',
+        classeFaixa: 'normal-faixa',
+        label: 'OK >8h',
+        icones: '🟢 ✅',
+        tooltip: 'Situação estável (acima de 8h)'
+    };
 }
 
-function normalizarStatus(status) {
-    return String(status || '')
+function gerarSerieConsumo24h(item) {
+    return gerarSerieEstoqueReal(item);
+}
+
+function gerarSerieEstoqueReal(item) {
+    const agora = new Date();
+    const dataFim = new Date(item.dataFim);
+    const estoqueInicial = numeroSeguro(item.estoque, 0);
+    const consumoHora = numeroSeguro(item.consumo, 0);
+    const labels = [];
+    const valores = [];
+    const timestampAgora = agora.getTime();
+    const timestampFim = Number.isNaN(dataFim.getTime())
+        ? timestampAgora + (numeroSeguro(item.autonomiaHoras, 24) * 3600000)
+        : dataFim.getTime();
+    const duracaoHoras = Math.max(0.1, (timestampFim - timestampAgora) / 3600000);
+    const numPontos = 20;
+    const passoHoras = duracaoHoras / (numPontos - 1);
+
+    for (let i = 0; i < numPontos; i += 1) {
+        const horasPassadas = i * passoHoras;
+        const dataHora = new Date(timestampAgora + horasPassadas * 60 * 60 * 1000);
+        const label = duracaoHoras <= 48
+            ? `${String(dataHora.getHours()).padStart(2, '0')}:00`
+            : `${String(dataHora.getDate()).padStart(2, '0')}/${String(dataHora.getMonth() + 1).padStart(2, '0')} ${String(dataHora.getHours()).padStart(2, '0')}:00`;
+        const valor = Math.max(0, estoqueInicial - (consumoHora * horasPassadas));
+
+        labels.push(label);
+        valores.push(Number(valor.toFixed(2)));
+    }
+
+    return {
+        labels,
+        valores,
+        estoqueInicial,
+        consumoHora,
+        fimPrevisto: formatarDataHora(new Date(timestampFim))
+    };
+}
+function exportarPDF() {
+    if (dadosFiltrados.length === 0) {
+        alert('Nenhum dado filtrado para exportar.');
+        return;
+    }
+
+    const popup = window.open('', '_blank');
+    if (!popup) {
+        alert('Não foi possível abrir a janela de impressão. Verifique bloqueio de pop-up.');
+        return;
+    }
+
+    const linhasHtml = dadosFiltrados.map((item) => {
+        const statusInfo = classificarCriticidade(item);
+        return `
+            <tr>
+                <td>${escapeHtml(item.pn)}</td>
+                <td>${escapeHtml(item.modelo)}</td>
+                <td>${numeroSeguro(item.estoque)}</td>
+                <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
+                <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
+                <td>${escapeHtml(formatarDataHora(new Date(item.dataFim)))}</td>
+                <td>${escapeHtml(String(item.turnoPrevisto))}º</td>
+                <td>${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label)}</td>
+            </tr>
+        `;
+    }).join('');
+
+    popup.document.write(`
+        <html>
+        <head>
+            <title>Relatório - ${gerarNomeArquivo('previsao')}</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+                h1 { margin: 0 0 8px; font-size: 20px; }
+                .meta { margin-bottom: 16px; color: #444; font-size: 12px; }
+                table { border-collapse: collapse; width: 100%; font-size: 12px; }
+                th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+                th { background: #f0f0f0; }
+            </style>
+        </head>
+        <body>
+            <h1>Dashboard de Previsão - Relatório</h1>
+            <div class="meta">Gerado em ${formatarDataHora(new Date())} | ${dadosFiltrados.length} itens</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>PN</th>
+                        <th>Modelo</th>
+                        <th>Estoque</th>
+                        <th>Consumo/h</th>
+                        <th>Autonomia</th>
+                        <th>Previsão</th>
+                        <th>Turno</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>${linhasHtml}</tbody>
+            </table>
+        </body>
+        </html>
+    `);
+
+    popup.document.close();
+    popup.focus();
+    popup.print();
+}
+
+function atualizarTextoModoVisao() {
+    btnModoVisao.textContent = modoVisualizacao === 'cards' ? 'Visão: Cards' : 'Visão: Tabela';
+}
+
+function limparFiltros() {
+    filtros = {
+        modelo: 'todos',
+        turno: 'todos',
+        status: 'todos',
+        ordem: 'urgencia',
+        busca: ''
+    };
+
+    buscaInput.value = '';
+
+    [
+        [filtroModeloEl, 'modelo', 'todos'],
+        [filtroTurnoEl, 'turno', 'todos'],
+        [filtroStatusEl, 'status', 'todos'],
+        [filtroOrdemEl, 'ordem', 'urgencia']
+    ].forEach(([container, dataAttr, valor]) => {
+        container.querySelectorAll('.filtro-btn').forEach((btn) => {
+            btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
+        });
+    });
+
+    aplicarFiltros();
+}
+
+function configurarAutoRefresh() {
+    if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+    }
+
+    if (autoRefreshIntervalSeconds <= 0 || autoRefreshPausado) {
+        autoRefreshStartedAt = null;
+        iniciarProgressBarAutoRefresh();
+        return;
+    }
+
+    autoRefreshStartedAt = Date.now();
+    autoRefreshTimer = setInterval(() => {
+        autoRefreshStartedAt = Date.now();
+        carregarDados();
+    }, autoRefreshIntervalSeconds * 1000);
+
+    iniciarProgressBarAutoRefresh();
+}
+
+function alternarPausaAutoRefresh() {
+    if (autoRefreshIntervalSeconds <= 0) {
+        return;
+    }
+
+    autoRefreshPausado = !autoRefreshPausado;
+    atualizarBotaoAutoRefresh();
+    configurarAutoRefresh();
+}
+
+function atualizarBotaoAutoRefresh() {
+    if (autoRefreshIntervalSeconds <= 0) {
+        btnPausarAutoRefresh.textContent = 'Auto desligada';
+        btnPausarAutoRefresh.disabled = true;
+        autoRefreshStatus.textContent = 'Auto atualização desligada';
+        autoRefreshCountdown.textContent = '--';
+        autoRefreshProgressBar.style.width = '0%';
+        autoRefreshProgressBar.classList.add('desligado');
+        autoRefreshProgressBar.classList.remove('pausado');
+        return;
+    }
+
+    btnPausarAutoRefresh.disabled = false;
+    btnPausarAutoRefresh.textContent = autoRefreshPausado ? 'Retomar auto' : 'Pausar auto';
+    autoRefreshStatus.textContent = autoRefreshPausado
+        ? `Auto atualização pausada (${formatarIntervaloAutoRefresh(autoRefreshIntervalSeconds)})`
+        : `Auto atualização a cada ${formatarIntervaloAutoRefresh(autoRefreshIntervalSeconds)}`;
+    autoRefreshProgressBar.classList.toggle('pausado', autoRefreshPausado);
+    autoRefreshProgressBar.classList.remove('desligado');
+}
+
+function iniciarProgressBarAutoRefresh() {
+    if (autoRefreshProgressTimer) {
+        clearInterval(autoRefreshProgressTimer);
+        autoRefreshProgressTimer = null;
+    }
+
+    atualizarProgressoAutoRefresh();
+
+    if (autoRefreshIntervalSeconds <= 0 || autoRefreshPausado) {
+        return;
+    }
+
+    autoRefreshProgressTimer = setInterval(atualizarProgressoAutoRefresh, 1000);
+}
+
+function atualizarProgressoAutoRefresh() {
+    if (autoRefreshIntervalSeconds <= 0) {
+        autoRefreshCountdown.textContent = '--';
+        autoRefreshProgressBar.style.width = '0%';
+        return;
+    }
+
+    if (autoRefreshPausado || !autoRefreshStartedAt) {
+        autoRefreshCountdown.textContent = 'Pausado';
+        return;
+    }
+
+    const totalMs = autoRefreshIntervalSeconds * 1000;
+    const elapsedMs = Date.now() - autoRefreshStartedAt;
+    const restanteMs = Math.max(0, totalMs - elapsedMs);
+    const progresso = Math.min(100, (elapsedMs / totalMs) * 100);
+
+    autoRefreshCountdown.textContent = `Próxima em ${formatarTempoRestante(restanteMs)}`;
+    autoRefreshProgressBar.style.width = `${progresso}%`;
+}
+
+function formatarTempoRestante(restanteMs) {
+    const totalSegundos = Math.ceil(restanteMs / 1000);
+    const minutos = Math.floor(totalSegundos / 60);
+    const segundos = totalSegundos % 60;
+    return minutos > 0
+        ? `${minutos}:${String(segundos).padStart(2, '0')}`
+        : `${segundos}s`;
+}
+
+function formatarIntervaloAutoRefresh(segundos) {
+    if (segundos % 60 === 0) {
+        return `${segundos / 60} min`;
+    }
+
+    return `${segundos}s`;
+}
+
+function baixarArquivo(blob, nomeArquivo) {
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+
+    link.href = url;
+    link.download = nomeArquivo;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+}
+
+function gerarNomeArquivo(prefixo) {
+    const agora = new Date();
+    const yyyy = agora.getFullYear();
+    const mm = String(agora.getMonth() + 1).padStart(2, '0');
+    const dd = String(agora.getDate()).padStart(2, '0');
+    const hh = String(agora.getHours()).padStart(2, '0');
+    const mi = String(agora.getMinutes()).padStart(2, '0');
+    return `${prefixo}_${yyyy}${mm}${dd}_${hh}${mi}`;
+}
+
+function numeroSeguro(valor, fallback = 0) {
+    const numero = Number(valor);
+    return Number.isFinite(numero) ? numero : fallback;
+}
+
+function normalizarTexto(valor) {
+    return String(valor || '')
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .toLowerCase();
+}
+
+function destaqueSeguro(texto) {
+    return escapeHtml(String(texto ?? ''));
+}
+
+function destacarTexto(texto, termo) {
+    const textoSeguro = destaqueSeguro(texto);
+    if (!termo) {
+        return textoSeguro;
+    }
+
+    const termoLimpo = escapeRegExp(String(termo));
+    if (!termoLimpo) {
+        return textoSeguro;
+    }
+
+    const regex = new RegExp(`(${termoLimpo})`, 'ig');
+    return textoSeguro.replace(regex, '<mark>$1</mark>');
+}
+
+function escapeRegExp(texto) {
+    return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function escapeHtml(valor) {
+    return String(valor ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function criarIdSeguro(valor) {
+    return String(valor || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
 }
 
 function obterTimestampSeguro(valorData) {
@@ -746,93 +1118,10 @@ function obterTimestampSeguro(valorData) {
     return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function obterTimestampPrevisao(item) {
-    const previsao = obterPrevisaoComDiasUteis(item);
-    return obterTimestampSeguro(previsao.dataFim);
-}
-
-function obterPrevisaoComDiasUteis(item) {
-    const autonomiaHoras = obterAutonomiaHorasBase(item);
-    const inicioCalculo = new Date(referenciaCalculoMs);
-    const dataFim = adicionarHorasConsumindoSomenteDiasUteis(inicioCalculo, autonomiaHoras);
-
-    return { autonomiaHoras, dataFim };
-}
-
-function obterAutonomiaHorasBase(item) {
-    const autonomiaApi = Number(item?.autonomiaHoras);
-    if (Number.isFinite(autonomiaApi) && autonomiaApi > 0) {
-        return autonomiaApi;
-    }
-
-    const estoque = Number(item?.estoque);
-    const consumo = Number(item?.consumo);
-
-    if (Number.isFinite(estoque) && Number.isFinite(consumo) && consumo > 0) {
-        return estoque / consumo;
-    }
-
-    return 0;
-}
-
-function adicionarHorasConsumindoSomenteDiasUteis(dataInicial, horasParaConsumir) {
-    const dataBase = new Date(dataInicial);
-    if (!Number.isFinite(dataBase.getTime())) {
-        return new Date(NaN);
-    }
-
-    let atual = new Date(dataBase);
-    let horasRestantes = Math.max(Number(horasParaConsumir) || 0, 0);
-
-    while (horasRestantes > 0) {
-        if (ehFimDeSemana(atual)) {
-            atual = avancarParaProximaSegunda(atual);
-            continue;
-        }
-
-        const fimDoDia = new Date(atual);
-        fimDoDia.setHours(24, 0, 0, 0);
-        const horasAteFimDoDia = (fimDoDia.getTime() - atual.getTime()) / (1000 * 60 * 60);
-        const horasDoBloco = Math.min(horasRestantes, horasAteFimDoDia);
-
-        atual = new Date(atual.getTime() + (horasDoBloco * 60 * 60 * 1000));
-        horasRestantes -= horasDoBloco;
-    }
-
-    return atual;
-}
-
-function ehFimDeSemana(data) {
-    const diaSemana = data.getDay();
-    return diaSemana === 0 || diaSemana === 6;
-}
-
-function avancarParaProximaSegunda(data) {
-    const proximaData = new Date(data);
-    const diaSemana = proximaData.getDay();
-
-    if (diaSemana === 6) {
-        proximaData.setDate(proximaData.getDate() + 2);
-    } else if (diaSemana === 0) {
-        proximaData.setDate(proximaData.getDate() + 1);
-    }
-
-    proximaData.setHours(0, 0, 0, 0);
-    return proximaData;
-}
-
-function temEstoqueDisponivel(item) {
-    const estoque = Number(item?.estoque);
-    return Number.isFinite(estoque) && estoque > 0;
-}
-
-function temConsumoValido(item) {
-    const consumo = Number(item?.consumo);
-    return Number.isFinite(consumo) && consumo > 0;
-}
-
 function itemPodeSerExibido(item) {
-    return temEstoqueDisponivel(item) && temConsumoValido(item);
+    const estoque = numeroSeguro(item?.estoque, 0);
+    const consumo = numeroSeguro(item?.consumo, 0);
+    return !(estoque <= 0 && consumo <= 0);
 }
 
 function formatarDataHora(data) {
@@ -872,17 +1161,15 @@ function mostrarLoading(ativo) {
     if (ativo) {
         btnAtualizar.disabled = true;
         btnAtualizar.innerHTML = '<span class="loading"></span> Atualizando...';
-        const loadingHtml = '<div class="loading-cards"><span class="loading"></span> Carregando dados da API...</div>';
-        cardsContainer.innerHTML = loadingHtml;
-        tabelaContainer.innerHTML = loadingHtml;
+        cardsContainer.classList.remove('modo-tabela');
+        cardsContainer.innerHTML = '<div class="loading-cards"><span class="loading"></span> Carregando dados da API...</div>';
     } else {
         btnAtualizar.disabled = false;
-        btnAtualizar.innerHTML = '<span>↻</span> Atualizar agora';
+        btnAtualizar.innerHTML = '<span>↻</span> Atualizar dados';
     }
 }
 
 function mostrarErro(mensagem) {
-    const erroHtml = `<div class="loading-cards" style="color: #d42f4a;">${mensagem}</div>`;
-    cardsContainer.innerHTML = erroHtml;
-    tabelaContainer.innerHTML = erroHtml;
+    cardsContainer.classList.remove('modo-tabela');
+    cardsContainer.innerHTML = `<div class="loading-cards" style="color: #d42f4a;">${escapeHtml(mensagem)}</div>`;
 }
