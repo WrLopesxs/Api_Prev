@@ -832,6 +832,10 @@ mark {
     animation: modal-in 260ms ease;
 }
 
+.modal-content.modal-consumo {
+    width: min(1120px, 100%);
+}
+
 @keyframes modal-in {
     from {
         opacity: 0;
@@ -1016,6 +1020,52 @@ mark {
     height: 220px !important;
 }
 
+.consumo-modal {
+    gap: 16px;
+}
+
+.consumo-cascata-filtros {
+    margin-top: 12px;
+}
+
+.consumo-toolbar {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.consumo-select-wrap {
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.consumo-select-label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.consumo-select {
+    min-width: 220px;
+}
+
+.consumo-chart-wrap canvas {
+    height: 420px !important;
+}
+
+.consumo-resumo-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
 .trend-stats {
     margin-top: 10px;
     display: grid;
@@ -1122,54 +1172,4 @@ mark {
     }
 
     .modal-grid,
-    .trend-stats {
-        grid-template-columns: 1fr;
-    }
-}
-
-@media (max-width: 620px) {
-    .header {
-        flex-direction: column;
-        align-items: flex-start;
-    }
-
-    .header-actions {
-        width: 100%;
-        justify-content: space-between;
-    }
-
-    .btn-tema,
-    .ultima-atualizacao,
-    .btn-atualizar,
-    .btn-acao {
-        width: 100%;
-        justify-content: center;
-    }
-
-    .acoes-principais,
-    .acoes-auto-refresh {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .auto-refresh-box {
-        width: 100%;
-    }
-
-    .kpi-container {
-        grid-template-columns: 1fr;
-    }
-
-    .cards-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .pn-info {
-        grid-template-columns: 1fr;
-    }
-
-    .pn-topbar {
-        flex-direction: column;
-        align-items: flex-start;
-    }
-}
+    .consumo-resumo-grid,
