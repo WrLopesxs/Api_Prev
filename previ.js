@@ -5,6 +5,7 @@ const STORAGE_THEME_KEY = 'dashboard-theme';
 let dadosCompletos = [];
 let dadosFiltrados = [];
 let modalTrendChart = null;
+let graficoConsumoChart = null;
 let modoVisualizacao = 'cards';
 let ordenacaoTabela = { campo: 'dataFim', direcao: 'asc' };
 let autoRefreshTimer = null;
@@ -12,6 +13,9 @@ let autoRefreshIntervalSeconds = 0;
 let autoRefreshPausado = false;
 let autoRefreshStartedAt = null;
 let autoRefreshProgressTimer = null;
+let filtroModeloGraficoConsumo = 'todos';
+let limitePnGraficoConsumo = 'todos';
+let pnSelecionadoGraficoConsumo = 'todos';
 
 let filtros = {
     modelo: 'todos',
@@ -25,6 +29,7 @@ const ultimaAtualizacaoEl = document.getElementById('ultimaAtualizacao');
 const cardsContainer = document.getElementById('cardsContainer');
 const btnAtualizar = document.getElementById('btnAtualizar');
 const btnLimparFiltros = document.getElementById('btnLimparFiltros');
+const btnGerarGraficoConsumo = document.getElementById('btnGerarGraficoConsumo');
 const btnExportarPdf = document.getElementById('btnExportarPdf');
 const btnModoVisao = document.getElementById('btnModoVisao');
 const btnPausarAutoRefresh = document.getElementById('btnPausarAutoRefresh');
@@ -48,6 +53,7 @@ const kpiNormal = document.getElementById('kpiNormal');
 const modalDetalhes = document.getElementById('modalDetalhes');
 const modalTitulo = document.getElementById('modalTitulo');
 const modalBody = document.getElementById('modalBody');
+const modalContent = modalDetalhes?.querySelector('.modal-content');
 
 const btnTema = document.getElementById('btnTema');
 const temaIcone = document.getElementById('temaIcone');
@@ -92,6 +98,7 @@ function configurarEventos() {
     });
 
     btnLimparFiltros.addEventListener('click', limparFiltros);
+    btnGerarGraficoConsumo.addEventListener('click', abrirModalGraficoConsumo);
     btnExportarPdf.addEventListener('click', exportarPDF);
     btnPausarAutoRefresh.addEventListener('click', alternarPausaAutoRefresh);
 
@@ -462,7 +469,16 @@ function criarCardHTML(item, topUrgentes) {
 function renderizarTabela(topUrgentes) {
     cardsContainer.classList.add('modo-tabela');
 
-    const dadosTabela = [...dadosFiltrados];
+    const dadosTabela = dadosFiltrados.filter((item) => {
+        const status = classificarCriticidade(item).grupo;
+        return status !== 'sem-consumo' && status !== 'esgotado';
+    });
+
+    if (dadosTabela.length === 0) {
+        cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item com consumo ativo para exibir na tabela.</div>';
+        return;
+    }
+
     ordenarDadosTabela(dadosTabela);
 
     const setaCampo = (campo) => {
@@ -575,12 +591,12 @@ function abrirModal(pn) {
         return;
     }
 
+    destruirGraficosModal();
+    modalContent?.classList.remove('modal-consumo');
     const dataFim = new Date(item.dataFim);
     const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
     const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
     const statusInfo = classificarCriticidade(item);
-    const serieEstoque = gerarSerieEstoqueReal(item);
-
     modalTitulo.textContent = item.pn;
 
     modalBody.innerHTML = `
@@ -612,26 +628,6 @@ function abrirModal(pn) {
                 </div>
             </div>
 
-            <div class="trend-chart-wrap">
-                <h4>📉 Queda do estoque até o esgotamento</h4>
-                <div class="trend-chart-subtitle">Estoque real projetado até ${escapeHtml(formatarDataHora(dataFim))}</div>
-                <canvas id="modalTrendChart" aria-label="Gráfico de tendência"></canvas>
-                <div class="trend-stats">
-                    <div class="trend-stat">
-                        <span class="trend-stat-label">Estoque atual</span>
-                        <span class="trend-stat-value">${serieEstoque.estoqueInicial.toFixed(0)} peças</span>
-                    </div>
-                    <div class="trend-stat">
-                        <span class="trend-stat-label">Consumo real</span>
-                        <span class="trend-stat-value">${serieEstoque.consumoHora.toFixed(2)} p/h</span>
-                    </div>
-                    <div class="trend-stat">
-                        <span class="trend-stat-label">Fim previsto</span>
-                        <span class="trend-stat-value">${escapeHtml(serieEstoque.fimPrevisto)}</span>
-                    </div>
-                </div>
-            </div>
-
             <div class="detail-section">
                 <h4>Previsão de esgotamento</h4>
                 <div class="detail-row">
@@ -655,7 +651,359 @@ function abrirModal(pn) {
     `;
 
     modalDetalhes.classList.add('mostrar');
-    renderizarGraficoEstoqueReal(serieEstoque);
+}
+
+function abrirModalGraficoConsumo() {
+    if (dadosFiltrados.length === 0) {
+        alert('Nenhum dado disponível para gerar o gráfico de consumo.');
+        return;
+    }
+
+    destruirGraficosModal();
+    filtroModeloGraficoConsumo = filtros.modelo !== 'todos' ? filtros.modelo : 'todos';
+    limitePnGraficoConsumo = 'todos';
+    pnSelecionadoGraficoConsumo = 'todos';
+    modalContent?.classList.add('modal-consumo');
+    modalTitulo.textContent = 'Gráfico de consumo por part number';
+    modalBody.innerHTML = criarConteudoModalGraficoConsumo();
+    modalDetalhes.classList.add('mostrar');
+    configurarFiltroModalGraficoConsumo();
+    renderizarGraficoConsumo();
+}
+
+function criarConteudoModalGraficoConsumo() {
+    const modelos = obterModelosGraficoConsumo();
+    const botoesModelo = [
+        `<button class="filtro-btn ${filtroModeloGraficoConsumo === 'todos' ? 'ativo' : ''}" data-modelo-grafico="todos">Todos</button>`,
+        ...modelos.map((modelo) => `
+            <button class="filtro-btn ${filtroModeloGraficoConsumo === modelo ? 'ativo' : ''}" data-modelo-grafico="${escapeHtml(modelo)}">
+                ${escapeHtml(modelo)}
+            </button>
+        `)
+    ].join('');
+
+    return `
+        <div class="modal-details consumo-modal">
+            <div class="detail-section">
+                <h4>Filtro em cascata por modelo</h4>
+                <div class="trend-chart-subtitle">Selecione o modelo para reorganizar o consumo por part number.</div>
+                <div class="filtro-buttons consumo-cascata-filtros" id="filtroModeloGraficoConsumo">${botoesModelo}</div>
+            </div>
+
+            <div class="detail-section" id="blocoLimiteGraficoConsumo">
+                <h4>Quantidade de PN por modelo</h4>
+                <div class="trend-chart-subtitle">Escolha quantos part numbers deseja visualizar para o modelo selecionado.</div>
+                <div class="consumo-toolbar">
+                    <div class="filtro-buttons consumo-cascata-filtros" id="filtroLimiteGraficoConsumo">
+                        <button class="filtro-btn ${limitePnGraficoConsumo === '5' ? 'ativo' : ''}" data-limite-grafico="5">5</button>
+                        <button class="filtro-btn ${limitePnGraficoConsumo === '10' ? 'ativo' : ''}" data-limite-grafico="10">10</button>
+                        <button class="filtro-btn ${limitePnGraficoConsumo === '15' ? 'ativo' : ''}" data-limite-grafico="15">15</button>
+                        <button class="filtro-btn ${limitePnGraficoConsumo === 'todos' ? 'ativo' : ''}" data-limite-grafico="todos">Todos</button>
+                    </div>
+                    <div class="consumo-select-wrap">
+                        <label class="consumo-select-label" for="selectPnGraficoConsumo">PN</label>
+                        <select id="selectPnGraficoConsumo" class="auto-refresh-select consumo-select"></select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="trend-chart-wrap consumo-chart-wrap">
+                <h4>Curva de consumo por part number</h4>
+                <div class="trend-chart-subtitle" id="graficoConsumoResumo"></div>
+                <canvas id="graficoConsumoCanvas" aria-label="Gráfico de consumo por part number"></canvas>
+            </div>
+
+            <div class="detail-section">
+                <h4>Resumo do filtro</h4>
+                <div class="consumo-resumo-grid" id="graficoConsumoCards"></div>
+            </div>
+        </div>
+    `;
+}
+
+function configurarFiltroModalGraficoConsumo() {
+    const filtroEl = document.getElementById('filtroModeloGraficoConsumo');
+    const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
+    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
+    if (!filtroEl) {
+        return;
+    }
+
+    filtroEl.addEventListener('click', (e) => {
+        const botao = e.target.closest('[data-modelo-grafico]');
+        if (!botao) {
+            return;
+        }
+
+        filtroModeloGraficoConsumo = botao.dataset.modeloGrafico;
+        if (filtroModeloGraficoConsumo === 'todos') {
+            limitePnGraficoConsumo = 'todos';
+        }
+        pnSelecionadoGraficoConsumo = 'todos';
+        filtroEl.querySelectorAll('[data-modelo-grafico]').forEach((item) => {
+            item.classList.toggle('ativo', item.dataset.modeloGrafico === filtroModeloGraficoConsumo);
+        });
+        renderizarGraficoConsumo();
+    });
+
+    limiteEl?.addEventListener('click', (e) => {
+        const botao = e.target.closest('[data-limite-grafico]');
+        if (!botao) {
+            return;
+        }
+
+        limitePnGraficoConsumo = botao.dataset.limiteGrafico;
+        limiteEl.querySelectorAll('[data-limite-grafico]').forEach((item) => {
+            item.classList.toggle('ativo', item.dataset.limiteGrafico === limitePnGraficoConsumo);
+        });
+        renderizarGraficoConsumo();
+    });
+
+    selectPnEl?.addEventListener('change', (e) => {
+        pnSelecionadoGraficoConsumo = e.target.value || 'todos';
+        renderizarGraficoConsumo();
+    });
+}
+
+function obterModelosGraficoConsumo() {
+    return [...new Set(
+        dadosFiltrados
+            .map((item) => item.modelo)
+            .filter(Boolean)
+    )].sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+}
+
+function obterDadosGraficoConsumo() {
+    const itensBase = dadosFiltrados.filter((item) => itemPodeSerExibido(item));
+    const itensFiltrados = filtroModeloGraficoConsumo === 'todos'
+        ? itensBase
+        : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
+
+    let itensOrdenados = [...itensFiltrados].sort((a, b) => {
+        const diferencaConsumo = numeroSeguro(b.consumo, 0) - numeroSeguro(a.consumo, 0);
+        if (diferencaConsumo !== 0) {
+            return diferencaConsumo;
+        }
+
+        return String(a.pn).localeCompare(String(b.pn), 'pt-BR');
+    });
+
+    if (pnSelecionadoGraficoConsumo !== 'todos') {
+        itensOrdenados = itensOrdenados.filter((item) => String(item.pn) === String(pnSelecionadoGraficoConsumo));
+        return itensOrdenados;
+    }
+
+    if (filtroModeloGraficoConsumo !== 'todos' && limitePnGraficoConsumo !== 'todos') {
+        return itensOrdenados.slice(0, Number(limitePnGraficoConsumo));
+    }
+
+    return itensOrdenados;
+}
+
+function obterPnDisponiveisGraficoConsumo() {
+    const itensBase = dadosFiltrados.filter((item) => itemPodeSerExibido(item));
+    const itensModelo = filtroModeloGraficoConsumo === 'todos'
+        ? itensBase
+        : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
+
+    return [...new Set(itensModelo.map((item) => String(item.pn)).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function renderizarGraficoConsumo() {
+    const canvas = document.getElementById('graficoConsumoCanvas');
+    const resumoEl = document.getElementById('graficoConsumoResumo');
+    const cardsResumoEl = document.getElementById('graficoConsumoCards');
+
+    if (!canvas || !resumoEl || !cardsResumoEl || typeof Chart === 'undefined') {
+        return;
+    }
+
+    const itens = obterDadosGraficoConsumo();
+    const modeloTexto = filtroModeloGraficoConsumo === 'todos'
+        ? 'todos os modelos'
+        : `modelo ${filtroModeloGraficoConsumo}`;
+    const blocoLimiteEl = document.getElementById('blocoLimiteGraficoConsumo');
+    const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
+    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
+    const pnDisponiveis = obterPnDisponiveisGraficoConsumo();
+
+    if (graficoConsumoChart) {
+        graficoConsumoChart.destroy();
+        graficoConsumoChart = null;
+    }
+
+    if (blocoLimiteEl) {
+        blocoLimiteEl.classList.toggle('hidden', filtroModeloGraficoConsumo === 'todos');
+    }
+
+    if (limiteEl) {
+        limiteEl.querySelectorAll('[data-limite-grafico]').forEach((item) => {
+            item.classList.toggle('ativo', item.dataset.limiteGrafico === limitePnGraficoConsumo);
+        });
+    }
+
+    if (pnSelecionadoGraficoConsumo !== 'todos' && !pnDisponiveis.includes(pnSelecionadoGraficoConsumo)) {
+        pnSelecionadoGraficoConsumo = 'todos';
+    }
+
+    if (selectPnEl) {
+        const opcoesPn = [
+            '<option value="todos">Todos os PN</option>',
+            ...pnDisponiveis.map((pn) => `<option value="${escapeHtml(pn)}" ${pnSelecionadoGraficoConsumo === pn ? 'selected' : ''}>${escapeHtml(pn)}</option>`)
+        ];
+        selectPnEl.innerHTML = opcoesPn.join('');
+        selectPnEl.disabled = filtroModeloGraficoConsumo === 'todos' || pnDisponiveis.length === 0;
+        selectPnEl.value = pnSelecionadoGraficoConsumo;
+    }
+
+    if (itens.length === 0) {
+        resumoEl.textContent = `Nenhum item disponível para ${modeloTexto}.`;
+        cardsResumoEl.innerHTML = '<div class="trend-stat">Sem dados para exibir.</div>';
+        return;
+    }
+
+    const totalConsumo = itens.reduce((acc, item) => acc + numeroSeguro(item.consumo), 0);
+    const itemMaisCritico = [...itens].sort((a, b) => {
+        const dataA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
+        const dataB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
+        return dataA - dataB;
+    })[0];
+    const rootStyle = getComputedStyle(document.documentElement);
+    const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
+
+    resumoEl.textContent = `${itens.length} part number(s) exibidos em cascata para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, PN ${pnSelecionadoGraficoConsumo}` : ''}${filtroModeloGraficoConsumo !== 'todos' && limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.`;
+    cardsResumoEl.innerHTML = `
+        <div class="trend-stat">
+            <span class="trend-stat-label">Modelo selecionado</span>
+            <span class="trend-stat-value">${escapeHtml(filtroModeloGraficoConsumo === 'todos' ? 'Todos' : filtroModeloGraficoConsumo)}</span>
+        </div>
+        <div class="trend-stat">
+            <span class="trend-stat-label">Total de PN</span>
+            <span class="trend-stat-value">${itens.length}</span>
+        </div>
+        <div class="trend-stat">
+            <span class="trend-stat-label">Consumo total</span>
+            <span class="trend-stat-value">${totalConsumo.toFixed(1)} p/h</span>
+        </div>
+        <div class="trend-stat">
+            <span class="trend-stat-label">Acaba primeiro</span>
+            <span class="trend-stat-value">${escapeHtml(String(itemMaisCritico.pn))} (${escapeHtml(formatarDataHora(new Date(itemMaisCritico.dataFim)))})</span>
+        </div>
+    `;
+
+    const { labels, datasets } = gerarDatasetsGraficoConsumo(itens);
+
+    graficoConsumoChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: textColor,
+                        font: { size: 11, weight: 700 },
+                        boxWidth: 12
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (context) => `${context.dataset.label}: ${Number(context.parsed.y).toFixed(0)} peças`,
+                        afterLabel: (context) => {
+                            const meta = context.dataset.metaInfo;
+                            return meta ? `Acaba em: ${meta.fimPrevisto}` : '';
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        color: textColor,
+                        maxRotation: 50,
+                        minRotation: 0
+                    },
+                    grid: {
+                        color: 'rgba(120, 140, 170, 0.1)'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        color: textColor
+                    },
+                    grid: {
+                        color: 'rgba(120, 140, 170, 0.18)'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Estoque restante',
+                        color: textColor
+                    }
+                }
+            }
+        }
+    });
+}
+
+function gerarDatasetsGraficoConsumo(itens) {
+    const itensOrdenados = [...itens].sort((a, b) => {
+        const dataA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
+        const dataB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
+        return dataA - dataB;
+    });
+    const inicioComum = new Date();
+    const fimMaisDistante = itensOrdenados.reduce((maior, item) => {
+        const timestamp = obterTimestampSeguro(item.dataFim) ?? inicioComum.getTime();
+        return Math.max(maior, timestamp);
+    }, inicioComum.getTime());
+    const series = itensOrdenados.map((item) => ({
+        item,
+        serie: gerarSerieEstoqueReal(item, {
+            inicio: inicioComum,
+            fim: fimMaisDistante,
+            numPontos: 24
+        })
+    }));
+    const labels = series[0]?.serie?.labels || [];
+
+    const palette = [
+        '#e20d2a',
+        '#1894ff',
+        '#29c177',
+        '#f5bb2e',
+        '#8b5cf6',
+        '#ff7a18',
+        '#14b8a6',
+        '#ef4444',
+        '#3b82f6',
+        '#84cc16'
+    ];
+
+    const datasets = series.map(({ item, serie }, index) => {
+        const cor = palette[index % palette.length];
+        return {
+            label: `${item.pn} (${item.modelo || '-'})`,
+            data: serie.valores,
+            borderColor: cor,
+            backgroundColor: `${cor}22`,
+            fill: false,
+            tension: 0.12,
+            pointRadius: 1.8,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+            metaInfo: {
+                fimPrevisto: serie.fimPrevisto
+            }
+        };
+    });
+
+    return { labels, datasets };
 }
 
 function renderizarGraficoEstoqueReal(serieEstoque) {
@@ -737,9 +1085,18 @@ function renderizarGraficoEstoqueReal(serieEstoque) {
 
 function fecharModal() {
     modalDetalhes.classList.remove('mostrar');
+    modalContent?.classList.remove('modal-consumo');
+    destruirGraficosModal();
+}
+
+function destruirGraficosModal() {
     if (modalTrendChart) {
         modalTrendChart.destroy();
         modalTrendChart = null;
+    }
+    if (graficoConsumoChart) {
+        graficoConsumoChart.destroy();
+        graficoConsumoChart = null;
     }
 }
 
@@ -801,20 +1158,24 @@ function gerarSerieConsumo24h(item) {
     return gerarSerieEstoqueReal(item);
 }
 
-function gerarSerieEstoqueReal(item) {
-    const agora = new Date();
+function gerarSerieEstoqueReal(item, opcoes = {}) {
+    const agora = opcoes.inicio ? new Date(opcoes.inicio) : new Date();
     const dataFim = new Date(item.dataFim);
     const estoqueInicial = numeroSeguro(item.estoque, 0);
     const consumoHora = numeroSeguro(item.consumo, 0);
     const labels = [];
     const valores = [];
     const timestampAgora = agora.getTime();
-    const timestampFim = Number.isNaN(dataFim.getTime())
+    const timestampFimItem = Number.isNaN(dataFim.getTime())
         ? timestampAgora + (numeroSeguro(item.autonomiaHoras, 24) * 3600000)
         : dataFim.getTime();
-    const duracaoHoras = Math.max(0.1, (timestampFim - timestampAgora) / 3600000);
-    const numPontos = 20;
+    const timestampFimGrafico = opcoes.fim
+        ? new Date(opcoes.fim).getTime()
+        : timestampFimItem;
+    const duracaoHoras = Math.max(0.1, (timestampFimGrafico - timestampAgora) / 3600000);
+    const numPontos = opcoes.numPontos || 20;
     const passoHoras = duracaoHoras / (numPontos - 1);
+    const horasAteFimItem = Math.max(0, (timestampFimItem - timestampAgora) / 3600000);
 
     for (let i = 0; i < numPontos; i += 1) {
         const horasPassadas = i * passoHoras;
@@ -822,7 +1183,8 @@ function gerarSerieEstoqueReal(item) {
         const label = duracaoHoras <= 48
             ? `${String(dataHora.getHours()).padStart(2, '0')}:00`
             : `${String(dataHora.getDate()).padStart(2, '0')}/${String(dataHora.getMonth() + 1).padStart(2, '0')} ${String(dataHora.getHours()).padStart(2, '0')}:00`;
-        const valor = Math.max(0, estoqueInicial - (consumoHora * horasPassadas));
+        const horasConsideradas = Math.min(horasPassadas, horasAteFimItem);
+        const valor = Math.max(0, estoqueInicial - (consumoHora * horasConsideradas));
 
         labels.push(label);
         valores.push(Number(valor.toFixed(2)));
@@ -833,7 +1195,7 @@ function gerarSerieEstoqueReal(item) {
         valores,
         estoqueInicial,
         consumoHora,
-        fimPrevisto: formatarDataHora(new Date(timestampFim))
+        fimPrevisto: formatarDataHora(new Date(timestampFimItem))
     };
 }
 function exportarPDF() {
