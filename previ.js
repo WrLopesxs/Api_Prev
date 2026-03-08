@@ -654,8 +654,9 @@ function abrirModal(pn) {
 }
 
 function abrirModalGraficoConsumo() {
-    if (dadosFiltrados.length === 0) {
-        alert('Nenhum dado disponível para gerar o gráfico de consumo.');
+    const itensDisponiveis = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
+    if (itensDisponiveis.length === 0) {
+        alert('Nenhum part number com estoque e consumo por hora disponível para gerar o gráfico.');
         return;
     }
 
@@ -768,13 +769,14 @@ function configurarFiltroModalGraficoConsumo() {
 function obterModelosGraficoConsumo() {
     return [...new Set(
         dadosFiltrados
+            .filter((item) => itemPodeAparecerNoGraficoConsumo(item))
             .map((item) => item.modelo)
             .filter(Boolean)
     )].sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
 }
 
 function obterDadosGraficoConsumo() {
-    const itensBase = dadosFiltrados.filter((item) => itemPodeSerExibido(item));
+    const itensBase = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
     const itensFiltrados = filtroModeloGraficoConsumo === 'todos'
         ? itensBase
         : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
@@ -801,7 +803,7 @@ function obterDadosGraficoConsumo() {
 }
 
 function obterPnDisponiveisGraficoConsumo() {
-    const itensBase = dadosFiltrados.filter((item) => itemPodeSerExibido(item));
+    const itensBase = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
     const itensModelo = filtroModeloGraficoConsumo === 'todos'
         ? itensBase
         : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
@@ -1484,6 +1486,12 @@ function itemPodeSerExibido(item) {
     const estoque = numeroSeguro(item?.estoque, 0);
     const consumo = numeroSeguro(item?.consumo, 0);
     return !(estoque <= 0 && consumo <= 0);
+}
+
+function itemPodeAparecerNoGraficoConsumo(item) {
+    const estoque = numeroSeguro(item?.estoque, 0);
+    const consumo = numeroSeguro(item?.consumo, 0);
+    return estoque > 0 && consumo > 0;
 }
 
 function formatarDataHora(data) {
