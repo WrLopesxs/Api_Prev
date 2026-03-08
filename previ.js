@@ -1,11 +1,19 @@
 
 const API_URL = 'https://script.google.com/macros/s/AKfycbzbXBOkRN2YiYremndvUXKXbvMAbqkJRPV8NvJEssARPoScg_bX5ysWbUrgZegEQ1FOGw/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
+const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
+const DEBOUNCE_BUSCA_MS = 280;
+const CARDS_POR_LOTE = 50;
+const NUM_PONTOS_GRAFICO = 12;
 
 let dadosCompletos = [];
 let dadosFiltrados = [];
 let modalTrendChart = null;
 let graficoConsumoChart = null;
+let modalTrendChartFingerprint = '';
+let graficoConsumoFingerprint = '';
+let camadaHotspotsConsumo = null;
+let handlerRecalculoHotspotsConsumo = null;
 let modoVisualizacao = 'cards';
 let ordenacaoTabela = { campo: 'dataFim', direcao: 'asc' };
 let autoRefreshTimer = null;
@@ -16,6 +24,13 @@ let autoRefreshProgressTimer = null;
 let filtroModeloGraficoConsumo = 'todos';
 let limitePnGraficoConsumo = 'todos';
 let pnSelecionadoGraficoConsumo = 'todos';
+let buscaDebounceTimer = null;
+let cardsVisiveis = [];
+let cursorCardsVisiveis = 0;
+let observerLazyCards = null;
+let ultimoFingerprintDados = '';
+let ultimoFingerprintModelos = '';
+let carregamentoEmAndamento = false;
 
 let filtros = {
     modelo: 'todos',
@@ -58,15 +73,17 @@ const modalContent = modalDetalhes?.querySelector('.modal-content');
 const btnTema = document.getElementById('btnTema');
 const temaIcone = document.getElementById('temaIcone');
 const temaLabel = document.getElementById('temaLabel');
+const btnModoEconomico = document.getElementById('btnModoEconomico');
 
 document.addEventListener('DOMContentLoaded', () => {
     inicializarTema();
+    inicializarModoEconomico();
     configurarEventos();
-    carregarDados();
+    carregarDados({ silencioso: false });
 });
 
 function configurarEventos() {
-    btnAtualizar.addEventListener('click', carregarDados);
+    btnAtualizar.addEventListener('click', () => carregarDados({ silencioso: false }));
 
     filtroModeloEl.addEventListener('click', (e) => {
         if (e.target.classList.contains('filtro-btn')) {
@@ -93,8 +110,15 @@ function configurarEventos() {
     });
 
     buscaInput.addEventListener('input', (e) => {
-        filtros.busca = e.target.value.trim();
-        aplicarFiltros();
+        if (buscaDebounceTimer) {
+            clearTimeout(buscaDebounceTimer);
+        }
+
+        const termo = e.target.value.trim();
+        buscaDebounceTimer = setTimeout(() => {
+            filtros.busca = termo;
+            aplicarFiltros();
+        }, DEBOUNCE_BUSCA_MS);
     });
 
     btnLimparFiltros.addEventListener('click', limparFiltros);
@@ -118,6 +142,18 @@ function configurarEventos() {
     if (btnTema) {
         btnTema.addEventListener('click', alternarTema);
     }
+    if (btnModoEconomico) {
+        btnModoEconomico.addEventListener('click', alternarModoEconomico);
+    }
+
+    cardsContainer.addEventListener('click', (e) => {
+        const card = e.target.closest('.pn-card');
+        if (!card || !cardsContainer.contains(card)) {
+            return;
+        }
+
+        abrirModal(card.dataset.pn);
+    });
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modalDetalhes.classList.contains('mostrar')) {
@@ -173,8 +209,42 @@ function atualizarBotaoTema(tema) {
     }
 }
 
-async function carregarDados() {
-    mostrarLoading(true);
+function inicializarModoEconomico() {
+    const economicoSalvo = localStorage.getItem(STORAGE_ECONOMICO_KEY);
+    const ativo = economicoSalvo === '1';
+    aplicarModoEconomico(ativo, false);
+}
+
+function alternarModoEconomico() {
+    const atual = document.documentElement.dataset.economico === 'true';
+    aplicarModoEconomico(!atual, true);
+}
+
+function aplicarModoEconomico(ativo, salvar) {
+    document.documentElement.dataset.economico = ativo ? 'true' : 'false';
+
+    if (salvar) {
+        localStorage.setItem(STORAGE_ECONOMICO_KEY, ativo ? '1' : '0');
+    }
+
+    if (btnModoEconomico) {
+        btnModoEconomico.textContent = ativo ? 'Modo econômico: ligado' : 'Modo econômico: desligado';
+        btnModoEconomico.setAttribute('aria-pressed', ativo ? 'true' : 'false');
+    }
+}
+
+async function carregarDados(opcoes = {}) {
+    const { silencioso = false } = opcoes;
+    if (carregamentoEmAndamento) {
+        return;
+    }
+
+    carregamentoEmAndamento = true;
+    const limparCardsDuranteLoading = dadosCompletos.length === 0;
+
+    if (!silencioso) {
+        mostrarLoading(true, limparCardsDuranteLoading);
+    }
 
     try {
         const response = await fetch(API_URL);
@@ -189,30 +259,56 @@ async function carregarDados() {
             throw new Error(data.erro || 'Resposta inválida da API');
         }
 
-        dadosCompletos = data.dados.filter((item) => itemPodeSerExibido(item));
+        const novosDados = data.dados.filter((item) => itemPodeSerExibido(item));
+        const novoFingerprint = gerarFingerprintDados(novosDados);
+        const dadosMudaram = novoFingerprint !== ultimoFingerprintDados;
 
-        const modelos = [...new Set(dadosCompletos.map(item => item.modelo).filter(Boolean))].sort();
-        atualizarFiltrosModelo(modelos);
-
-        if (data.ultimaAtualizacao) {
-            const dataAtualizacao = new Date(data.ultimaAtualizacao);
-            ultimaAtualizacaoEl.textContent = `Atualizado: ${formatarDataHora(dataAtualizacao)}`;
-        } else {
-            ultimaAtualizacaoEl.textContent = 'Atualizado agora';
+        if (!dadosMudaram) {
+            atualizarTextoUltimaAtualizacao(data.ultimaAtualizacao, true);
+            return;
         }
 
+        dadosCompletos = novosDados;
+        ultimoFingerprintDados = novoFingerprint;
+
+        const modelos = [...new Set(dadosCompletos.map((item) => item.modelo).filter(Boolean))].sort();
+        atualizarFiltrosModelo(modelos);
+        atualizarTextoUltimaAtualizacao(data.ultimaAtualizacao, false);
         aplicarFiltros();
     } catch (error) {
         console.error('Erro ao carregar dados:', error);
-        mostrarErro('Erro de conexão com a API. Tente novamente.');
+        if (silencioso) {
+            ultimaAtualizacaoEl.textContent = `Falha na checagem automática (${formatarHora(new Date())})`;
+        } else {
+            mostrarErro('Erro de conexão com a API. Tente novamente.');
+        }
     } finally {
-        mostrarLoading(false);
+        carregamentoEmAndamento = false;
+        if (!silencioso) {
+            mostrarLoading(false);
+        }
     }
+}
+
+function atualizarTextoUltimaAtualizacao(ultimaAtualizacaoApi, semMudanca) {
+    if (ultimaAtualizacaoApi) {
+        const dataAtualizacao = new Date(ultimaAtualizacaoApi);
+        const prefixo = semMudanca ? 'Sem mudanças (checado em):' : 'Atualizado:';
+        ultimaAtualizacaoEl.textContent = `${prefixo} ${formatarDataHora(dataAtualizacao)}`;
+        return;
+    }
+
+    ultimaAtualizacaoEl.textContent = semMudanca ? 'Sem mudanças detectadas' : 'Atualizado agora';
 }
 
 function atualizarFiltrosModelo(modelos) {
     if (!modelos.includes(filtros.modelo)) {
         filtros.modelo = 'todos';
+    }
+
+    const fingerprintModelos = gerarFingerprintListaModelos(modelos);
+    if (fingerprintModelos === ultimoFingerprintModelos) {
+        return;
     }
 
     const html = [
@@ -225,6 +321,7 @@ function atualizarFiltrosModelo(modelos) {
     });
 
     filtroModeloEl.innerHTML = html.join('');
+    ultimoFingerprintModelos = fingerprintModelos;
 }
 
 function atualizarFiltro(tipo, valor) {
@@ -301,8 +398,8 @@ function ordenarDadosFiltrados() {
     dadosFiltrados.sort((a, b) => {
         const statusA = classificarCriticidade(a);
         const statusB = classificarCriticidade(b);
-        const dataA = obterTimestampSeguro(a?.dataFim);
-        const dataB = obterTimestampSeguro(b?.dataFim);
+        const dataA = obterTimestampEsgotamento(a);
+        const dataB = obterTimestampEsgotamento(b);
 
         if (statusA.grupo === 'sem-consumo' && statusB.grupo !== 'sem-consumo') {
             return 1;
@@ -386,42 +483,112 @@ function atualizarContadorResultados() {
 }
 function renderizarCards(topUrgentes) {
     if (dadosFiltrados.length === 0) {
+        desconectarObserverLazyCards();
+        cardsVisiveis = [];
+        cursorCardsVisiveis = 0;
         cardsContainer.classList.remove('modo-tabela');
         cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item encontrado com os filtros atuais.</div>';
         return;
     }
 
     if (modoVisualizacao === 'tabela') {
+        desconectarObserverLazyCards();
         renderizarTabela(topUrgentes);
         return;
     }
 
     cardsContainer.classList.remove('modo-tabela');
-    cardsContainer.innerHTML = dadosFiltrados.map(item => criarCardHTML(item, topUrgentes)).join('');
-
-    cardsContainer.querySelectorAll('.pn-card').forEach((card) => {
-        card.addEventListener('click', () => abrirModal(card.dataset.pn));
-    });
+    cardsVisiveis = [...dadosFiltrados];
+    cursorCardsVisiveis = 0;
+    cardsContainer.innerHTML = '';
+    carregarProximoLoteCards();
 }
 
-function criarCardHTML(item, topUrgentes) {
+function carregarProximoLoteCards() {
+    if (cursorCardsVisiveis >= cardsVisiveis.length) {
+        atualizarSentinelaLazyCards();
+        return;
+    }
+
+    cardsContainer.querySelector('.cards-sentinel')?.remove();
+
+    const fimLote = Math.min(cursorCardsVisiveis + CARDS_POR_LOTE, cardsVisiveis.length);
+    const lote = cardsVisiveis.slice(cursorCardsVisiveis, fimLote);
+    const htmlLote = lote.map((item) => criarCardHTML(item)).join('');
+
+    cardsContainer.insertAdjacentHTML('beforeend', htmlLote);
+    cursorCardsVisiveis = fimLote;
+    atualizarSentinelaLazyCards();
+}
+
+function atualizarSentinelaLazyCards() {
+    if (cursorCardsVisiveis >= cardsVisiveis.length) {
+        desconectarObserverLazyCards();
+        cardsContainer.querySelector('.cards-sentinel')?.remove();
+        return;
+    }
+
+    let sentinela = cardsContainer.querySelector('.cards-sentinel');
+    if (!sentinela) {
+        sentinela = document.createElement('div');
+        sentinela.className = 'cards-sentinel';
+    }
+
+    sentinela.textContent = `Role para carregar mais (${cursorCardsVisiveis}/${cardsVisiveis.length})`;
+    cardsContainer.appendChild(sentinela);
+    observarSentinelaCards(sentinela);
+}
+
+function observarSentinelaCards(sentinela) {
+    if (typeof IntersectionObserver === 'undefined') {
+        cardsContainer.querySelector('.cards-sentinel')?.remove();
+
+        while (cursorCardsVisiveis < cardsVisiveis.length) {
+            const fimLote = Math.min(cursorCardsVisiveis + CARDS_POR_LOTE, cardsVisiveis.length);
+            const lote = cardsVisiveis.slice(cursorCardsVisiveis, fimLote);
+            const htmlLote = lote.map((item) => criarCardHTML(item)).join('');
+            cardsContainer.insertAdjacentHTML('beforeend', htmlLote);
+            cursorCardsVisiveis = fimLote;
+        }
+
+        return;
+    }
+
+    if (!observerLazyCards) {
+        observerLazyCards = new IntersectionObserver((entries) => {
+            const entrouNaTela = entries.some((entry) => entry.isIntersecting);
+            if (entrouNaTela) {
+                carregarProximoLoteCards();
+            }
+        }, {
+            root: null,
+            rootMargin: '320px 0px',
+            threshold: 0.01
+        });
+    }
+
+    observerLazyCards.disconnect();
+    observerLazyCards.observe(sentinela);
+}
+
+function desconectarObserverLazyCards() {
+    if (observerLazyCards) {
+        observerLazyCards.disconnect();
+    }
+}
+
+function criarCardHTML(item) {
     const dataFim = new Date(item.dataFim);
     const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
     const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
     const statusInfo = classificarCriticidade(item);
-    const rankUrgencia = topUrgentes.get(String(item.pn));
     const termoBusca = filtros.busca;
 
     const classes = [
         'pn-card',
         statusInfo.grupo,
-        statusInfo.classeFaixa,
-        rankUrgencia ? 'urgente' : ''
+        statusInfo.classeFaixa
     ].filter(Boolean).join(' ');
-
-    const badgeUrgente = rankUrgencia
-        ? `<span class="urgente-badge">TOP ${rankUrgencia} URGENTE</span>`
-        : '';
 
     return `
         <article class="${classes}" id="card-${criarIdSeguro(item.pn)}" data-pn="${escapeHtml(item.pn)}">
@@ -429,7 +596,6 @@ function criarCardHTML(item, topUrgentes) {
                 <div class="pn-header">
                     <span class="pn-nome">${destacarTexto(item.pn, termoBusca)}</span>
                 </div>
-                ${badgeUrgente}
                 <span class="pn-modelo">${destacarTexto(item.modelo, termoBusca)}</span>
             </div>
 
@@ -566,8 +732,8 @@ function ordenarDadosTabela(lista) {
             valorA = numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY);
             valorB = numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY);
         } else if (campo === 'dataFim') {
-            valorA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
-            valorB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
+            valorA = obterTimestampEsgotamento(a) ?? Number.POSITIVE_INFINITY;
+            valorB = obterTimestampEsgotamento(b) ?? Number.POSITIVE_INFINITY;
         } else if (['estoque', 'consumo', 'autonomiaHoras', 'turnoPrevisto'].includes(campo)) {
             valorA = numeroSeguro(a[campo], Number.POSITIVE_INFINITY);
             valorB = numeroSeguro(b[campo], Number.POSITIVE_INFINITY);
@@ -644,6 +810,12 @@ function abrirModal(pn) {
                 </div>
             </div>
 
+            <div class="trend-chart-wrap">
+                <h4>Curva de consumo prevista</h4>
+                <div class="trend-chart-subtitle">Projeção simplificada com ${NUM_PONTOS_GRAFICO} pontos para melhor desempenho.</div>
+                <canvas id="modalTrendChart" aria-label="Gráfico de curva de consumo"></canvas>
+            </div>
+
             <div class="status-box ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
                 Status: ${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label.toUpperCase())}
             </div>
@@ -651,6 +823,8 @@ function abrirModal(pn) {
     `;
 
     modalDetalhes.classList.add('mostrar');
+    const serieEstoque = gerarSerieEstoqueReal(item, { numPontos: NUM_PONTOS_GRAFICO });
+    renderizarGraficoEstoqueReal(serieEstoque);
 }
 
 function abrirModalGraficoConsumo() {
@@ -818,6 +992,7 @@ function renderizarGraficoConsumo() {
     const cardsResumoEl = document.getElementById('graficoConsumoCards');
 
     if (!canvas || !resumoEl || !cardsResumoEl || typeof Chart === 'undefined') {
+        limparHotspotsGraficoConsumo();
         return;
     }
 
@@ -829,11 +1004,6 @@ function renderizarGraficoConsumo() {
     const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
     const selectPnEl = document.getElementById('selectPnGraficoConsumo');
     const pnDisponiveis = obterPnDisponiveisGraficoConsumo();
-
-    if (graficoConsumoChart) {
-        graficoConsumoChart.destroy();
-        graficoConsumoChart = null;
-    }
 
     if (blocoLimiteEl) {
         blocoLimiteEl.classList.toggle('hidden', filtroModeloGraficoConsumo === 'todos');
@@ -862,6 +1032,12 @@ function renderizarGraficoConsumo() {
     if (itens.length === 0) {
         resumoEl.textContent = `Nenhum item disponível para ${modeloTexto}.`;
         cardsResumoEl.innerHTML = '<div class="trend-stat">Sem dados para exibir.</div>';
+        if (graficoConsumoChart) {
+            graficoConsumoChart.destroy();
+            graficoConsumoChart = null;
+            graficoConsumoFingerprint = '';
+        }
+        limparHotspotsGraficoConsumo();
         return;
     }
 
@@ -895,6 +1071,31 @@ function renderizarGraficoConsumo() {
     `;
 
     const { labels, datasets } = gerarDatasetsGraficoConsumo(itens);
+    const fingerprintGrafico = gerarFingerprintGrafico({
+        tipo: 'consumo',
+        textColor,
+        labels,
+        datasets: datasets.map((dataset) => ({
+            label: dataset.label,
+            data: dataset.data,
+            fimPrevisto: dataset.metaInfo?.fimPrevisto || ''
+        }))
+    });
+
+    if (
+        graficoConsumoChart
+        && graficoConsumoFingerprint === fingerprintGrafico
+        && graficoConsumoChart.canvas === canvas
+    ) {
+        configurarHotspotsGraficoConsumo();
+        return;
+    }
+
+    if (graficoConsumoChart) {
+        graficoConsumoChart.destroy();
+        graficoConsumoChart = null;
+    }
+    limparHotspotsGraficoConsumo();
 
     graficoConsumoChart = new Chart(canvas, {
         type: 'line',
@@ -905,6 +1106,10 @@ function renderizarGraficoConsumo() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            interaction: {
+                mode: 'nearest',
+                intersect: false
+            },
             plugins: {
                 legend: {
                     labels: {
@@ -914,6 +1119,7 @@ function renderizarGraficoConsumo() {
                     }
                 },
                 tooltip: {
+                    intersect: false,
                     callbacks: {
                         label: (context) => `${context.dataset.label}: ${Number(context.parsed.y).toFixed(0)} peças`,
                         afterLabel: (context) => {
@@ -951,6 +1157,146 @@ function renderizarGraficoConsumo() {
             }
         }
     });
+    graficoConsumoFingerprint = fingerprintGrafico;
+    configurarHotspotsGraficoConsumo();
+}
+
+function configurarHotspotsGraficoConsumo() {
+    if (!graficoConsumoChart || !graficoConsumoChart.canvas) {
+        limparHotspotsGraficoConsumo();
+        return;
+    }
+
+    const canvas = graficoConsumoChart.canvas;
+    const wrapper = canvas.closest('.consumo-chart-wrap');
+    if (!wrapper) {
+        limparHotspotsGraficoConsumo();
+        return;
+    }
+
+    const chart = graficoConsumoChart;
+    chart.update('none');
+
+    if (!camadaHotspotsConsumo || !wrapper.contains(camadaHotspotsConsumo)) {
+        camadaHotspotsConsumo?.remove();
+        camadaHotspotsConsumo = document.createElement('div');
+        camadaHotspotsConsumo.className = 'consumo-hotspots';
+        wrapper.appendChild(camadaHotspotsConsumo);
+    }
+
+    atualizarPosicaoCamadaHotspotsConsumo(chart, camadaHotspotsConsumo);
+    camadaHotspotsConsumo.innerHTML = '';
+
+    const scaleX = canvas.clientWidth / Math.max(1, chart.width || canvas.clientWidth);
+    const scaleY = canvas.clientHeight / Math.max(1, chart.height || canvas.clientHeight);
+
+    chart.data.datasets.forEach((dataset, datasetIndex) => {
+        const meta = chart.getDatasetMeta(datasetIndex);
+        if (meta.hidden) {
+            return;
+        }
+
+        meta.data.forEach((ponto, index) => {
+            const props = ponto.getProps(['x', 'y'], true);
+            if (!Number.isFinite(props.x) || !Number.isFinite(props.y)) {
+                return;
+            }
+
+            const hotspot = document.createElement('button');
+            hotspot.type = 'button';
+            hotspot.className = 'consumo-hotspot';
+            hotspot.setAttribute('aria-label', `${dataset.label} ponto ${index + 1}`);
+            hotspot.style.left = `${props.x * scaleX}px`;
+            hotspot.style.top = `${props.y * scaleY}px`;
+
+            const hitRadius = numeroSeguro(dataset.pointHitRadius, 16);
+            const hoverRadius = numeroSeguro(dataset.pointHoverRadius, 4);
+            const radius = Math.max(12, hitRadius, hoverRadius + 8);
+            hotspot.style.width = `${radius * 2}px`;
+            hotspot.style.height = `${radius * 2}px`;
+
+            hotspot.addEventListener('mouseenter', () => {
+                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
+            });
+            hotspot.addEventListener('mousemove', () => {
+                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
+            });
+            hotspot.addEventListener('focus', () => {
+                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
+            });
+            hotspot.addEventListener('mouseleave', () => {
+                limparTooltipHotspotConsumo(chart);
+            });
+            hotspot.addEventListener('blur', () => {
+                limparTooltipHotspotConsumo(chart);
+            });
+
+            camadaHotspotsConsumo.appendChild(hotspot);
+        });
+    });
+
+    registrarRecalculoHotspotsConsumo();
+}
+
+function atualizarPosicaoCamadaHotspotsConsumo(chart, camada) {
+    const canvas = chart.canvas;
+    camada.style.left = `${canvas.offsetLeft}px`;
+    camada.style.top = `${canvas.offsetTop}px`;
+    camada.style.width = `${canvas.clientWidth}px`;
+    camada.style.height = `${canvas.clientHeight}px`;
+}
+
+function ativarTooltipHotspotConsumo(chart, datasetIndex, index, propsPonto) {
+    const elementosAtivos = [{ datasetIndex, index }];
+    chart.setActiveElements(elementosAtivos);
+
+    if (chart.tooltip) {
+        chart.tooltip.setActiveElements(elementosAtivos, { x: propsPonto.x, y: propsPonto.y });
+    }
+
+    chart.update('none');
+}
+
+function limparTooltipHotspotConsumo(chart) {
+    chart.setActiveElements([]);
+    if (chart.tooltip) {
+        chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+    }
+    chart.update('none');
+}
+
+function registrarRecalculoHotspotsConsumo() {
+    removerRecalculoHotspotsConsumo();
+
+    handlerRecalculoHotspotsConsumo = () => {
+        if (!graficoConsumoChart) {
+            return;
+        }
+        requestAnimationFrame(configurarHotspotsGraficoConsumo);
+    };
+
+    window.addEventListener('resize', handlerRecalculoHotspotsConsumo, { passive: true });
+    modalContent?.addEventListener('scroll', handlerRecalculoHotspotsConsumo, { passive: true });
+    modalBody?.addEventListener('scroll', handlerRecalculoHotspotsConsumo, { passive: true });
+}
+
+function removerRecalculoHotspotsConsumo() {
+    if (!handlerRecalculoHotspotsConsumo) {
+        return;
+    }
+
+    window.removeEventListener('resize', handlerRecalculoHotspotsConsumo);
+    modalContent?.removeEventListener('scroll', handlerRecalculoHotspotsConsumo);
+    modalBody?.removeEventListener('scroll', handlerRecalculoHotspotsConsumo);
+    handlerRecalculoHotspotsConsumo = null;
+}
+
+function limparHotspotsGraficoConsumo() {
+    removerRecalculoHotspotsConsumo();
+    if (camadaHotspotsConsumo) {
+        camadaHotspotsConsumo.remove();
+        camadaHotspotsConsumo = null;
+    }
 }
 
 function gerarDatasetsGraficoConsumo(itens) {
@@ -969,7 +1315,7 @@ function gerarDatasetsGraficoConsumo(itens) {
         serie: gerarSerieEstoqueReal(item, {
             inicio: inicioComum,
             fim: fimMaisDistante,
-            numPontos: 24
+            numPontos: NUM_PONTOS_GRAFICO
         })
     }));
     const labels = series[0]?.serie?.labels || [];
@@ -998,6 +1344,7 @@ function gerarDatasetsGraficoConsumo(itens) {
             tension: 0.12,
             pointRadius: 1.8,
             pointHoverRadius: 4,
+            pointHitRadius: 16,
             borderWidth: 2,
             metaInfo: {
                 fimPrevisto: serie.fimPrevisto
@@ -1018,12 +1365,27 @@ function renderizarGraficoEstoqueReal(serieEstoque) {
         return;
     }
 
-    if (modalTrendChart) {
-        modalTrendChart.destroy();
-    }
-
     const rootStyle = getComputedStyle(document.documentElement);
     const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
+    const fingerprintGrafico = gerarFingerprintGrafico({
+        tipo: 'estoque',
+        textColor,
+        labels: serieEstoque.labels,
+        datasets: [{ data: serieEstoque.valores }]
+    });
+
+    if (
+        modalTrendChart
+        && modalTrendChartFingerprint === fingerprintGrafico
+        && modalTrendChart.canvas === canvas
+    ) {
+        return;
+    }
+
+    if (modalTrendChart) {
+        modalTrendChart.destroy();
+        modalTrendChart = null;
+    }
 
     modalTrendChart = new Chart(canvas, {
         type: 'line',
@@ -1083,23 +1445,30 @@ function renderizarGraficoEstoqueReal(serieEstoque) {
             }
         }
     });
+    modalTrendChartFingerprint = fingerprintGrafico;
 }
 
 function fecharModal() {
     modalDetalhes.classList.remove('mostrar');
     modalContent?.classList.remove('modal-consumo');
     destruirGraficosModal();
+    modalBody.innerHTML = '';
 }
 
 function destruirGraficosModal() {
+    limparHotspotsGraficoConsumo();
+
     if (modalTrendChart) {
         modalTrendChart.destroy();
         modalTrendChart = null;
     }
+    modalTrendChartFingerprint = '';
+
     if (graficoConsumoChart) {
         graficoConsumoChart.destroy();
         graficoConsumoChart = null;
     }
+    graficoConsumoFingerprint = '';
 }
 
 function classificarCriticidade(item) {
@@ -1156,10 +1525,6 @@ function classificarCriticidade(item) {
     };
 }
 
-function gerarSerieConsumo24h(item) {
-    return gerarSerieEstoqueReal(item);
-}
-
 function gerarSerieEstoqueReal(item, opcoes = {}) {
     const agora = opcoes.inicio ? new Date(opcoes.inicio) : new Date();
     const dataFim = new Date(item.dataFim);
@@ -1175,7 +1540,7 @@ function gerarSerieEstoqueReal(item, opcoes = {}) {
         ? new Date(opcoes.fim).getTime()
         : timestampFimItem;
     const duracaoHoras = Math.max(0.1, (timestampFimGrafico - timestampAgora) / 3600000);
-    const numPontos = opcoes.numPontos || 20;
+    const numPontos = opcoes.numPontos || NUM_PONTOS_GRAFICO;
     const passoHoras = duracaoHoras / (numPontos - 1);
     const horasAteFimItem = Math.max(0, (timestampFimItem - timestampAgora) / 3600000);
 
@@ -1273,6 +1638,11 @@ function atualizarTextoModoVisao() {
 }
 
 function limparFiltros() {
+    if (buscaDebounceTimer) {
+        clearTimeout(buscaDebounceTimer);
+        buscaDebounceTimer = null;
+    }
+
     filtros = {
         modelo: 'todos',
         turno: 'todos',
@@ -1312,7 +1682,7 @@ function configurarAutoRefresh() {
     autoRefreshStartedAt = Date.now();
     autoRefreshTimer = setInterval(() => {
         autoRefreshStartedAt = Date.now();
-        carregarDados();
+        carregarDados({ silencioso: true });
     }, autoRefreshIntervalSeconds * 1000);
 
     iniciarProgressBarAutoRefresh();
@@ -1402,19 +1772,6 @@ function formatarIntervaloAutoRefresh(segundos) {
     return `${segundos}s`;
 }
 
-function baixarArquivo(blob, nomeArquivo) {
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-
-    link.href = url;
-    link.download = nomeArquivo;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    URL.revokeObjectURL(url);
-}
-
 function gerarNomeArquivo(prefixo) {
     const agora = new Date();
     const yyyy = agora.getFullYear();
@@ -1428,6 +1785,55 @@ function gerarNomeArquivo(prefixo) {
 function numeroSeguro(valor, fallback = 0) {
     const numero = Number(valor);
     return Number.isFinite(numero) ? numero : fallback;
+}
+
+function gerarFingerprintDados(lista) {
+    if (!Array.isArray(lista) || lista.length === 0) {
+        return 'dados:0';
+    }
+
+    const assinatura = lista
+        .map((item) => gerarAssinaturaItem(item))
+        .sort((a, b) => a.localeCompare(b))
+        .join('||');
+
+    return `dados:${lista.length}:${hashStringFNV1a(assinatura)}`;
+}
+
+function gerarAssinaturaItem(item) {
+    const timestampFim = obterTimestampSeguro(item?.dataFim);
+
+    return [
+        String(item?.pn ?? ''),
+        String(item?.modelo ?? ''),
+        String(item?.linha ?? ''),
+        numeroSeguro(item?.estoque, 0).toFixed(4),
+        numeroSeguro(item?.consumo, 0).toFixed(4),
+        numeroSeguro(item?.autonomiaHoras, 0).toFixed(4),
+        timestampFim === null ? '' : String(timestampFim),
+        String(item?.turnoPrevisto ?? '')
+    ].join('|');
+}
+
+function gerarFingerprintListaModelos(modelos) {
+    if (!Array.isArray(modelos) || modelos.length === 0) {
+        return 'modelos:0';
+    }
+
+    return `modelos:${modelos.length}:${hashStringFNV1a(modelos.map((item) => String(item)).join('|'))}`;
+}
+
+function gerarFingerprintGrafico(payload) {
+    return `grafico:${hashStringFNV1a(JSON.stringify(payload))}`;
+}
+
+function hashStringFNV1a(texto) {
+    let hash = 2166136261;
+    for (let i = 0; i < texto.length; i += 1) {
+        hash ^= texto.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function normalizarTexto(valor) {
@@ -1482,6 +1888,20 @@ function obterTimestampSeguro(valorData) {
     return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function obterTimestampEsgotamento(item) {
+    const timestampDataFim = obterTimestampSeguro(item?.dataFim);
+    if (timestampDataFim !== null) {
+        return timestampDataFim;
+    }
+
+    const autonomiaHoras = numeroSeguro(item?.autonomiaHoras, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(autonomiaHoras)) {
+        return null;
+    }
+
+    return Date.now() + (autonomiaHoras * 3600000);
+}
+
 function itemPodeSerExibido(item) {
     const estoque = numeroSeguro(item?.estoque, 0);
     const consumo = numeroSeguro(item?.consumo, 0);
@@ -1527,12 +1947,17 @@ function formatarHora(data) {
     });
 }
 
-function mostrarLoading(ativo) {
+function mostrarLoading(ativo, limparCards = true) {
     if (ativo) {
         btnAtualizar.disabled = true;
         btnAtualizar.innerHTML = '<span class="loading"></span> Atualizando...';
-        cardsContainer.classList.remove('modo-tabela');
-        cardsContainer.innerHTML = '<div class="loading-cards"><span class="loading"></span> Carregando dados da API...</div>';
+        if (limparCards) {
+            desconectarObserverLazyCards();
+            cardsVisiveis = [];
+            cursorCardsVisiveis = 0;
+            cardsContainer.classList.remove('modo-tabela');
+            cardsContainer.innerHTML = '<div class="loading-cards"><span class="loading"></span> Carregando dados da API...</div>';
+        }
     } else {
         btnAtualizar.disabled = false;
         btnAtualizar.innerHTML = '<span>↻</span> Atualizar dados';
@@ -1540,6 +1965,9 @@ function mostrarLoading(ativo) {
 }
 
 function mostrarErro(mensagem) {
+    desconectarObserverLazyCards();
+    cardsVisiveis = [];
+    cursorCardsVisiveis = 0;
     cardsContainer.classList.remove('modo-tabela');
     cardsContainer.innerHTML = `<div class="loading-cards" style="color: #d42f4a;">${escapeHtml(mensagem)}</div>`;
 }
