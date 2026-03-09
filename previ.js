@@ -3,17 +3,16 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbzbXBOkRN2YiYremndvUXKX
 const STORAGE_THEME_KEY = 'dashboard-theme';
 const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
 const DEBOUNCE_BUSCA_MS = 280;
-const CARDS_POR_LOTE = 50;
+const CARDS_POR_LOTE = 24;
 const NUM_PONTOS_GRAFICO = 12;
+const LIMIAR_PERFORMANCE_VISUAL = 30;
+const LIMITE_PADRAO_GRAFICO_CONSUMO = '10';
+const LIMITE_SEGURANCA_GRAFICO_CONSUMO = 40;
 
 let dadosCompletos = [];
 let dadosFiltrados = [];
-let modalTrendChart = null;
 let graficoConsumoChart = null;
-let modalTrendChartFingerprint = '';
 let graficoConsumoFingerprint = '';
-let camadaHotspotsConsumo = null;
-let handlerRecalculoHotspotsConsumo = null;
 let modoVisualizacao = 'cards';
 let ordenacaoTabela = { campo: 'dataFim', direcao: 'asc' };
 let autoRefreshTimer = null;
@@ -24,6 +23,8 @@ let autoRefreshProgressTimer = null;
 let filtroModeloGraficoConsumo = 'todos';
 let limitePnGraficoConsumo = 'todos';
 let pnSelecionadoGraficoConsumo = 'todos';
+let handlerHoverGraficoConsumo = null;
+let ultimoHoverTooltipConsumo = '';
 let buscaDebounceTimer = null;
 let cardsVisiveis = [];
 let cursorCardsVisiveis = 0;
@@ -31,12 +32,15 @@ let observerLazyCards = null;
 let ultimoFingerprintDados = '';
 let ultimoFingerprintModelos = '';
 let carregamentoEmAndamento = false;
+let limiteSegurancaGraficoAplicado = false;
+let totalItensGraficoAntesLimite = 0;
 
 let filtros = {
     modelo: 'todos',
     turno: 'todos',
     status: 'todos',
     ordem: 'urgencia',
+    limiteCards: 'todos',
     busca: ''
 };
 
@@ -59,6 +63,7 @@ const filtroModeloEl = document.getElementById('filtroModelo');
 const filtroTurnoEl = document.getElementById('filtroTurno');
 const filtroStatusEl = document.getElementById('filtroStatus');
 const filtroOrdemEl = document.getElementById('filtroOrdem');
+const filtroLimiteCardsEl = document.getElementById('filtroLimiteCards');
 
 const kpiTotal = document.getElementById('kpiTotal');
 const kpiCritico = document.getElementById('kpiCritico');
@@ -109,6 +114,12 @@ function configurarEventos() {
         }
     });
 
+    filtroLimiteCardsEl?.addEventListener('click', (e) => {
+        if (e.target.classList.contains('filtro-btn')) {
+            atualizarFiltro('limiteCards', e.target.dataset.limiteCards);
+        }
+    });
+
     buscaInput.addEventListener('input', (e) => {
         if (buscaDebounceTimer) {
             clearTimeout(buscaDebounceTimer);
@@ -136,7 +147,7 @@ function configurarEventos() {
     btnModoVisao.addEventListener('click', () => {
         modoVisualizacao = modoVisualizacao === 'cards' ? 'tabela' : 'cards';
         atualizarTextoModoVisao();
-        renderizarCards(obterTopUrgentes(dadosFiltrados));
+        renderizarCards();
     });
 
     if (btnTema) {
@@ -231,6 +242,8 @@ function aplicarModoEconomico(ativo, salvar) {
         btnModoEconomico.textContent = ativo ? 'Modo econômico: ligado' : 'Modo econômico: desligado';
         btnModoEconomico.setAttribute('aria-pressed', ativo ? 'true' : 'false');
     }
+
+    atualizarModoPerformanceAutomatico(modoVisualizacao === 'cards' ? cardsVisiveis.length : dadosFiltrados.length);
 }
 
 async function carregarDados(opcoes = {}) {
@@ -331,7 +344,8 @@ function atualizarFiltro(tipo, valor) {
         modelo: { container: filtroModeloEl, dataAttr: 'modelo' },
         turno: { container: filtroTurnoEl, dataAttr: 'turno' },
         status: { container: filtroStatusEl, dataAttr: 'status' },
-        ordem: { container: filtroOrdemEl, dataAttr: 'ordem' }
+        ordem: { container: filtroOrdemEl, dataAttr: 'ordem' },
+        limiteCards: { container: filtroLimiteCardsEl, dataAttr: 'limiteCards' }
     };
 
     const itemConfig = config[tipo];
@@ -350,11 +364,9 @@ function aplicarFiltros() {
     dadosFiltrados = dadosCompletos.filter((item) => itemPassaFiltros(item));
     ordenarDadosFiltrados();
 
-    const topUrgentes = obterTopUrgentes(dadosFiltrados);
-
     atualizarKPIs();
     atualizarContadorResultados();
-    renderizarCards(topUrgentes);
+    renderizarCards();
 }
 
 function itemPassaFiltros(item, opcoes = {}) {
@@ -451,21 +463,6 @@ function ordenarDadosFiltrados() {
     });
 }
 
-function obterTopUrgentes(lista) {
-    const criticos = lista.filter((item) => classificarCriticidade(item).grupo === 'critico');
-    const base = criticos.length > 0 ? criticos : lista;
-
-    const top = [...base]
-        .sort((a, b) => numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY) - numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY))
-        .slice(0, 3);
-
-    const mapa = new Map();
-    top.forEach((item, index) => {
-        mapa.set(String(item.pn), index + 1);
-    });
-
-    return mapa;
-}
 function atualizarKPIs() {
     const total = dadosFiltrados.length;
     const criticos = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'critico').length;
@@ -481,11 +478,12 @@ function atualizarKPIs() {
 function atualizarContadorResultados() {
     resultadoContadorEl.textContent = `${dadosFiltrados.length} resultado(s)`;
 }
-function renderizarCards(topUrgentes) {
+function renderizarCards() {
     if (dadosFiltrados.length === 0) {
         desconectarObserverLazyCards();
         cardsVisiveis = [];
         cursorCardsVisiveis = 0;
+        atualizarModoPerformanceAutomatico(0);
         cardsContainer.classList.remove('modo-tabela');
         cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item encontrado com os filtros atuais.</div>';
         return;
@@ -493,15 +491,42 @@ function renderizarCards(topUrgentes) {
 
     if (modoVisualizacao === 'tabela') {
         desconectarObserverLazyCards();
-        renderizarTabela(topUrgentes);
+        atualizarModoPerformanceAutomatico(dadosFiltrados.length);
+        renderizarTabela();
         return;
     }
 
     cardsContainer.classList.remove('modo-tabela');
-    cardsVisiveis = [...dadosFiltrados];
+    cardsVisiveis = obterListaLimitadaCards(dadosFiltrados);
+    atualizarModoPerformanceAutomatico(cardsVisiveis.length);
     cursorCardsVisiveis = 0;
     cardsContainer.innerHTML = '';
     carregarProximoLoteCards();
+}
+
+function obterListaLimitadaCards(lista) {
+    if (filtros.limiteCards === 'todos') {
+        return [...lista];
+    }
+
+    const limite = Number(filtros.limiteCards);
+    if (!Number.isFinite(limite) || limite <= 0) {
+        return [...lista];
+    }
+
+    return lista.slice(0, limite);
+}
+
+function atualizarModoPerformanceAutomatico(totalItens) {
+    const root = document.documentElement;
+    const modoEconomicoAtivo = root.dataset.economico === 'true';
+
+    if (modoEconomicoAtivo) {
+        root.dataset.performance = 'low';
+        return;
+    }
+
+    root.dataset.performance = totalItens >= LIMIAR_PERFORMANCE_VISUAL ? 'low' : 'normal';
 }
 
 function carregarProximoLoteCards() {
@@ -632,7 +657,7 @@ function criarCardHTML(item) {
     `;
 }
 
-function renderizarTabela(topUrgentes) {
+function renderizarTabela() {
     cardsContainer.classList.add('modo-tabela');
 
     const dadosTabela = dadosFiltrados.filter((item) => {
@@ -657,12 +682,10 @@ function renderizarTabela(topUrgentes) {
 
     const linhas = dadosTabela.map((item) => {
         const statusInfo = classificarCriticidade(item);
-        const rankUrgencia = topUrgentes.get(String(item.pn));
         const termoBusca = filtros.busca;
 
         return `
-            <tr class="linha-tabela ${rankUrgencia ? 'linha-urgente' : ''}" data-pn="${escapeHtml(item.pn)}">
-                <td>${rankUrgencia ? `TOP ${rankUrgencia}` : '-'}</td>
+            <tr class="linha-tabela" data-pn="${escapeHtml(item.pn)}">
                 <td>${destacarTexto(item.pn, termoBusca)}</td>
                 <td>${destacarTexto(item.modelo, termoBusca)}</td>
                 <td>${numeroSeguro(item.estoque)}</td>
@@ -680,7 +703,6 @@ function renderizarTabela(topUrgentes) {
             <table class="tabela-lista">
                 <thead>
                     <tr>
-                        <th data-sort="urgencia">Urgência${setaCampo('urgencia')}</th>
                         <th data-sort="pn">PN${setaCampo('pn')}</th>
                         <th data-sort="modelo">Modelo${setaCampo('modelo')}</th>
                         <th data-sort="estoque">Estoque${setaCampo('estoque')}</th>
@@ -713,7 +735,7 @@ function renderizarTabela(topUrgentes) {
                 ordenacaoTabela.direcao = 'asc';
             }
 
-            renderizarTabela(topUrgentes);
+            renderizarTabela();
         });
     });
 }
@@ -810,12 +832,6 @@ function abrirModal(pn) {
                 </div>
             </div>
 
-            <div class="trend-chart-wrap">
-                <h4>Curva de consumo prevista</h4>
-                <div class="trend-chart-subtitle">Projeção simplificada com ${NUM_PONTOS_GRAFICO} pontos para melhor desempenho.</div>
-                <canvas id="modalTrendChart" aria-label="Gráfico de curva de consumo"></canvas>
-            </div>
-
             <div class="status-box ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
                 Status: ${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label.toUpperCase())}
             </div>
@@ -823,8 +839,6 @@ function abrirModal(pn) {
     `;
 
     modalDetalhes.classList.add('mostrar');
-    const serieEstoque = gerarSerieEstoqueReal(item, { numPontos: NUM_PONTOS_GRAFICO });
-    renderizarGraficoEstoqueReal(serieEstoque);
 }
 
 function abrirModalGraficoConsumo() {
@@ -836,7 +850,7 @@ function abrirModalGraficoConsumo() {
 
     destruirGraficosModal();
     filtroModeloGraficoConsumo = filtros.modelo !== 'todos' ? filtros.modelo : 'todos';
-    limitePnGraficoConsumo = 'todos';
+    limitePnGraficoConsumo = LIMITE_PADRAO_GRAFICO_CONSUMO;
     pnSelecionadoGraficoConsumo = 'todos';
     modalContent?.classList.add('modal-consumo');
     modalTitulo.textContent = 'Gráfico de consumo por part number';
@@ -866,13 +880,13 @@ function criarConteudoModalGraficoConsumo() {
             </div>
 
             <div class="detail-section" id="blocoLimiteGraficoConsumo">
-                <h4>Quantidade de PN por modelo</h4>
-                <div class="trend-chart-subtitle">Escolha quantos part numbers deseja visualizar para o modelo selecionado.</div>
+                <h4>Quantidade de PN no gráfico</h4>
+                <div class="trend-chart-subtitle">Defina quantos part numbers serão exibidos para manter boa performance.</div>
                 <div class="consumo-toolbar">
                     <div class="filtro-buttons consumo-cascata-filtros" id="filtroLimiteGraficoConsumo">
                         <button class="filtro-btn ${limitePnGraficoConsumo === '5' ? 'ativo' : ''}" data-limite-grafico="5">5</button>
                         <button class="filtro-btn ${limitePnGraficoConsumo === '10' ? 'ativo' : ''}" data-limite-grafico="10">10</button>
-                        <button class="filtro-btn ${limitePnGraficoConsumo === '15' ? 'ativo' : ''}" data-limite-grafico="15">15</button>
+                        <button class="filtro-btn ${limitePnGraficoConsumo === '20' ? 'ativo' : ''}" data-limite-grafico="20">20</button>
                         <button class="filtro-btn ${limitePnGraficoConsumo === 'todos' ? 'ativo' : ''}" data-limite-grafico="todos">Todos</button>
                     </div>
                     <div class="consumo-select-wrap">
@@ -911,9 +925,6 @@ function configurarFiltroModalGraficoConsumo() {
         }
 
         filtroModeloGraficoConsumo = botao.dataset.modeloGrafico;
-        if (filtroModeloGraficoConsumo === 'todos') {
-            limitePnGraficoConsumo = 'todos';
-        }
         pnSelecionadoGraficoConsumo = 'todos';
         filtroEl.querySelectorAll('[data-modelo-grafico]').forEach((item) => {
             item.classList.toggle('ativo', item.dataset.modeloGrafico === filtroModeloGraficoConsumo);
@@ -964,13 +975,22 @@ function obterDadosGraficoConsumo() {
         return String(a.pn).localeCompare(String(b.pn), 'pt-BR');
     });
 
+    totalItensGraficoAntesLimite = itensOrdenados.length;
+    limiteSegurancaGraficoAplicado = false;
+
     if (pnSelecionadoGraficoConsumo !== 'todos') {
         itensOrdenados = itensOrdenados.filter((item) => String(item.pn) === String(pnSelecionadoGraficoConsumo));
+        totalItensGraficoAntesLimite = itensOrdenados.length;
         return itensOrdenados;
     }
 
-    if (filtroModeloGraficoConsumo !== 'todos' && limitePnGraficoConsumo !== 'todos') {
+    if (limitePnGraficoConsumo !== 'todos') {
         return itensOrdenados.slice(0, Number(limitePnGraficoConsumo));
+    }
+
+    if (itensOrdenados.length > LIMITE_SEGURANCA_GRAFICO_CONSUMO) {
+        limiteSegurancaGraficoAplicado = true;
+        return itensOrdenados.slice(0, LIMITE_SEGURANCA_GRAFICO_CONSUMO);
     }
 
     return itensOrdenados;
@@ -992,7 +1012,6 @@ function renderizarGraficoConsumo() {
     const cardsResumoEl = document.getElementById('graficoConsumoCards');
 
     if (!canvas || !resumoEl || !cardsResumoEl || typeof Chart === 'undefined') {
-        limparHotspotsGraficoConsumo();
         return;
     }
 
@@ -1006,7 +1025,7 @@ function renderizarGraficoConsumo() {
     const pnDisponiveis = obterPnDisponiveisGraficoConsumo();
 
     if (blocoLimiteEl) {
-        blocoLimiteEl.classList.toggle('hidden', filtroModeloGraficoConsumo === 'todos');
+        blocoLimiteEl.classList.remove('hidden');
     }
 
     if (limiteEl) {
@@ -1033,11 +1052,11 @@ function renderizarGraficoConsumo() {
         resumoEl.textContent = `Nenhum item disponível para ${modeloTexto}.`;
         cardsResumoEl.innerHTML = '<div class="trend-stat">Sem dados para exibir.</div>';
         if (graficoConsumoChart) {
+            removerHoverTooltipConsumo();
             graficoConsumoChart.destroy();
             graficoConsumoChart = null;
             graficoConsumoFingerprint = '';
         }
-        limparHotspotsGraficoConsumo();
         return;
     }
 
@@ -1050,7 +1069,10 @@ function renderizarGraficoConsumo() {
     const rootStyle = getComputedStyle(document.documentElement);
     const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
 
-    resumoEl.textContent = `${itens.length} part number(s) exibidos em cascata para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, PN ${pnSelecionadoGraficoConsumo}` : ''}${filtroModeloGraficoConsumo !== 'todos' && limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.`;
+    const avisoSeguranca = limiteSegurancaGraficoAplicado
+        ? ` Exibição limitada automaticamente em ${LIMITE_SEGURANCA_GRAFICO_CONSUMO} PN para manter desempenho.`
+        : '';
+    resumoEl.textContent = `${itens.length} part number(s) exibidos para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, PN ${pnSelecionadoGraficoConsumo}` : ''}${limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.${avisoSeguranca}`;
     cardsResumoEl.innerHTML = `
         <div class="trend-stat">
             <span class="trend-stat-label">Modelo selecionado</span>
@@ -1058,7 +1080,7 @@ function renderizarGraficoConsumo() {
         </div>
         <div class="trend-stat">
             <span class="trend-stat-label">Total de PN</span>
-            <span class="trend-stat-value">${itens.length}</span>
+            <span class="trend-stat-value">${itens.length}${totalItensGraficoAntesLimite > itens.length ? ` de ${totalItensGraficoAntesLimite}` : ''}</span>
         </div>
         <div class="trend-stat">
             <span class="trend-stat-label">Consumo total</span>
@@ -1087,15 +1109,15 @@ function renderizarGraficoConsumo() {
         && graficoConsumoFingerprint === fingerprintGrafico
         && graficoConsumoChart.canvas === canvas
     ) {
-        configurarHotspotsGraficoConsumo();
+        configurarHoverTooltipConsumo();
         return;
     }
 
     if (graficoConsumoChart) {
+        removerHoverTooltipConsumo();
         graficoConsumoChart.destroy();
         graficoConsumoChart = null;
     }
-    limparHotspotsGraficoConsumo();
 
     graficoConsumoChart = new Chart(canvas, {
         type: 'line',
@@ -1106,9 +1128,12 @@ function renderizarGraficoConsumo() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,
+            resizeDelay: 120,
+            events: ['click', 'mouseout', 'touchstart', 'touchend'],
             interaction: {
-                mode: 'nearest',
-                intersect: false
+                mode: 'point',
+                intersect: true
             },
             plugins: {
                 legend: {
@@ -1119,7 +1144,9 @@ function renderizarGraficoConsumo() {
                     }
                 },
                 tooltip: {
-                    intersect: false,
+                    enabled: true,
+                    mode: 'point',
+                    intersect: true,
                     callbacks: {
                         label: (context) => `${context.dataset.label}: ${Number(context.parsed.y).toFixed(0)} peças`,
                         afterLabel: (context) => {
@@ -1158,145 +1185,119 @@ function renderizarGraficoConsumo() {
         }
     });
     graficoConsumoFingerprint = fingerprintGrafico;
-    configurarHotspotsGraficoConsumo();
+    configurarHoverTooltipConsumo();
 }
 
-function configurarHotspotsGraficoConsumo() {
+function configurarHoverTooltipConsumo() {
     if (!graficoConsumoChart || !graficoConsumoChart.canvas) {
-        limparHotspotsGraficoConsumo();
+        removerHoverTooltipConsumo();
+        return;
+    }
+
+    removerHoverTooltipConsumo();
+
+    const chart = graficoConsumoChart;
+    const canvas = chart.canvas;
+
+    const limparTooltipInterno = () => {
+        if (!ultimoHoverTooltipConsumo) {
+            return;
+        }
+        ultimoHoverTooltipConsumo = '';
+        chart.setActiveElements([]);
+        if (chart.tooltip) {
+            chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        }
+        chart.update('none');
+    };
+
+    const atualizarTooltip = (evento) => {
+        const pontoEvento = evento?.touches?.[0] || evento?.changedTouches?.[0] || evento;
+        if (!pontoEvento || typeof pontoEvento.clientX !== 'number' || typeof pontoEvento.clientY !== 'number') {
+            return;
+        }
+
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+            return;
+        }
+
+        const x = (pontoEvento.clientX - rect.left) * (chart.width / rect.width);
+        const y = (pontoEvento.clientY - rect.top) * (chart.height / rect.height);
+
+        let melhor = null;
+        let menorDistancia = Number.POSITIVE_INFINITY;
+
+        chart.data.datasets.forEach((dataset, datasetIndex) => {
+            const meta = chart.getDatasetMeta(datasetIndex);
+            if (!meta || meta.hidden) {
+                return;
+            }
+
+            meta.data.forEach((ponto, index) => {
+                const pos = ponto.getProps(['x', 'y', 'skip'], true);
+                if (pos.skip || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
+                    return;
+                }
+
+                const distancia = Math.hypot(pos.x - x, pos.y - y);
+                if (distancia < menorDistancia) {
+                    menorDistancia = distancia;
+                    melhor = { datasetIndex, index, x: pos.x, y: pos.y, dataset };
+                }
+            });
+        });
+
+        if (!melhor) {
+            limparTooltipInterno();
+            return;
+        }
+
+        const raio = numeroSeguro(melhor.dataset?.pointRadius, 3);
+        const distanciaMaxima = Math.max(4, raio + 1);
+        if (menorDistancia > distanciaMaxima) {
+            limparTooltipInterno();
+            return;
+        }
+
+        const ativos = [{ datasetIndex: melhor.datasetIndex, index: melhor.index }];
+        const chaveHover = `${melhor.datasetIndex}:${melhor.index}`;
+        if (ultimoHoverTooltipConsumo === chaveHover) {
+            return;
+        }
+        ultimoHoverTooltipConsumo = chaveHover;
+        chart.setActiveElements(ativos);
+        if (chart.tooltip) {
+            chart.tooltip.setActiveElements(ativos, { x: melhor.x, y: melhor.y });
+        }
+        chart.update('none');
+    };
+
+    handlerHoverGraficoConsumo = {
+        atualizarTooltip,
+        limparTooltip: limparTooltipInterno
+    };
+
+    canvas.addEventListener('mousemove', atualizarTooltip, { passive: true });
+    canvas.addEventListener('touchmove', atualizarTooltip, { passive: true });
+    canvas.addEventListener('mouseleave', limparTooltip, { passive: true });
+    canvas.addEventListener('touchend', limparTooltip, { passive: true });
+}
+
+function removerHoverTooltipConsumo() {
+    if (!handlerHoverGraficoConsumo || !graficoConsumoChart?.canvas) {
+        ultimoHoverTooltipConsumo = '';
+        handlerHoverGraficoConsumo = null;
         return;
     }
 
     const canvas = graficoConsumoChart.canvas;
-    const wrapper = canvas.closest('.consumo-chart-wrap');
-    if (!wrapper) {
-        limparHotspotsGraficoConsumo();
-        return;
-    }
-
-    const chart = graficoConsumoChart;
-    chart.update('none');
-
-    if (!camadaHotspotsConsumo || !wrapper.contains(camadaHotspotsConsumo)) {
-        camadaHotspotsConsumo?.remove();
-        camadaHotspotsConsumo = document.createElement('div');
-        camadaHotspotsConsumo.className = 'consumo-hotspots';
-        wrapper.appendChild(camadaHotspotsConsumo);
-    }
-
-    atualizarPosicaoCamadaHotspotsConsumo(chart, camadaHotspotsConsumo);
-    camadaHotspotsConsumo.innerHTML = '';
-
-    const scaleX = canvas.clientWidth / Math.max(1, chart.width || canvas.clientWidth);
-    const scaleY = canvas.clientHeight / Math.max(1, chart.height || canvas.clientHeight);
-
-    chart.data.datasets.forEach((dataset, datasetIndex) => {
-        const meta = chart.getDatasetMeta(datasetIndex);
-        if (meta.hidden) {
-            return;
-        }
-
-        meta.data.forEach((ponto, index) => {
-            const props = ponto.getProps(['x', 'y'], true);
-            if (!Number.isFinite(props.x) || !Number.isFinite(props.y)) {
-                return;
-            }
-
-            const hotspot = document.createElement('button');
-            hotspot.type = 'button';
-            hotspot.className = 'consumo-hotspot';
-            hotspot.setAttribute('aria-label', `${dataset.label} ponto ${index + 1}`);
-            hotspot.style.left = `${props.x * scaleX}px`;
-            hotspot.style.top = `${props.y * scaleY}px`;
-
-            const hitRadius = numeroSeguro(dataset.pointHitRadius, 16);
-            const hoverRadius = numeroSeguro(dataset.pointHoverRadius, 4);
-            const radius = Math.max(12, hitRadius, hoverRadius + 8);
-            hotspot.style.width = `${radius * 2}px`;
-            hotspot.style.height = `${radius * 2}px`;
-
-            hotspot.addEventListener('mouseenter', () => {
-                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
-            });
-            hotspot.addEventListener('mousemove', () => {
-                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
-            });
-            hotspot.addEventListener('focus', () => {
-                ativarTooltipHotspotConsumo(chart, datasetIndex, index, props);
-            });
-            hotspot.addEventListener('mouseleave', () => {
-                limparTooltipHotspotConsumo(chart);
-            });
-            hotspot.addEventListener('blur', () => {
-                limparTooltipHotspotConsumo(chart);
-            });
-
-            camadaHotspotsConsumo.appendChild(hotspot);
-        });
-    });
-
-    registrarRecalculoHotspotsConsumo();
-}
-
-function atualizarPosicaoCamadaHotspotsConsumo(chart, camada) {
-    const canvas = chart.canvas;
-    camada.style.left = `${canvas.offsetLeft}px`;
-    camada.style.top = `${canvas.offsetTop}px`;
-    camada.style.width = `${canvas.clientWidth}px`;
-    camada.style.height = `${canvas.clientHeight}px`;
-}
-
-function ativarTooltipHotspotConsumo(chart, datasetIndex, index, propsPonto) {
-    const elementosAtivos = [{ datasetIndex, index }];
-    chart.setActiveElements(elementosAtivos);
-
-    if (chart.tooltip) {
-        chart.tooltip.setActiveElements(elementosAtivos, { x: propsPonto.x, y: propsPonto.y });
-    }
-
-    chart.update('none');
-}
-
-function limparTooltipHotspotConsumo(chart) {
-    chart.setActiveElements([]);
-    if (chart.tooltip) {
-        chart.tooltip.setActiveElements([], { x: 0, y: 0 });
-    }
-    chart.update('none');
-}
-
-function registrarRecalculoHotspotsConsumo() {
-    removerRecalculoHotspotsConsumo();
-
-    handlerRecalculoHotspotsConsumo = () => {
-        if (!graficoConsumoChart) {
-            return;
-        }
-        requestAnimationFrame(configurarHotspotsGraficoConsumo);
-    };
-
-    window.addEventListener('resize', handlerRecalculoHotspotsConsumo, { passive: true });
-    modalContent?.addEventListener('scroll', handlerRecalculoHotspotsConsumo, { passive: true });
-    modalBody?.addEventListener('scroll', handlerRecalculoHotspotsConsumo, { passive: true });
-}
-
-function removerRecalculoHotspotsConsumo() {
-    if (!handlerRecalculoHotspotsConsumo) {
-        return;
-    }
-
-    window.removeEventListener('resize', handlerRecalculoHotspotsConsumo);
-    modalContent?.removeEventListener('scroll', handlerRecalculoHotspotsConsumo);
-    modalBody?.removeEventListener('scroll', handlerRecalculoHotspotsConsumo);
-    handlerRecalculoHotspotsConsumo = null;
-}
-
-function limparHotspotsGraficoConsumo() {
-    removerRecalculoHotspotsConsumo();
-    if (camadaHotspotsConsumo) {
-        camadaHotspotsConsumo.remove();
-        camadaHotspotsConsumo = null;
-    }
+    canvas.removeEventListener('mousemove', handlerHoverGraficoConsumo.atualizarTooltip);
+    canvas.removeEventListener('touchmove', handlerHoverGraficoConsumo.atualizarTooltip);
+    canvas.removeEventListener('mouseleave', handlerHoverGraficoConsumo.limparTooltip);
+    canvas.removeEventListener('touchend', handlerHoverGraficoConsumo.limparTooltip);
+    ultimoHoverTooltipConsumo = '';
+    handlerHoverGraficoConsumo = null;
 }
 
 function gerarDatasetsGraficoConsumo(itens) {
@@ -1342,9 +1343,11 @@ function gerarDatasetsGraficoConsumo(itens) {
             backgroundColor: `${cor}22`,
             fill: false,
             tension: 0.12,
-            pointRadius: 1.8,
-            pointHoverRadius: 4,
-            pointHitRadius: 16,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+            pointHitRadius: 0,
+            hitRadius: 0,
+            hoverRadius: 5,
             borderWidth: 2,
             metaInfo: {
                 fimPrevisto: serie.fimPrevisto
@@ -1355,99 +1358,6 @@ function gerarDatasetsGraficoConsumo(itens) {
     return { labels, datasets };
 }
 
-function renderizarGraficoEstoqueReal(serieEstoque) {
-    if (typeof Chart === 'undefined') {
-        return;
-    }
-
-    const canvas = document.getElementById('modalTrendChart');
-    if (!canvas) {
-        return;
-    }
-
-    const rootStyle = getComputedStyle(document.documentElement);
-    const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
-    const fingerprintGrafico = gerarFingerprintGrafico({
-        tipo: 'estoque',
-        textColor,
-        labels: serieEstoque.labels,
-        datasets: [{ data: serieEstoque.valores }]
-    });
-
-    if (
-        modalTrendChart
-        && modalTrendChartFingerprint === fingerprintGrafico
-        && modalTrendChart.canvas === canvas
-    ) {
-        return;
-    }
-
-    if (modalTrendChart) {
-        modalTrendChart.destroy();
-        modalTrendChart = null;
-    }
-
-    modalTrendChart = new Chart(canvas, {
-        type: 'line',
-        data: {
-            labels: serieEstoque.labels,
-            datasets: [
-                {
-                    label: 'Estoque restante',
-                    data: serieEstoque.valores,
-                    borderColor: '#3b9dff',
-                    backgroundColor: 'rgba(59, 157, 255, 0.15)',
-                    tension: 0,
-                    fill: true,
-                    pointRadius: 2.2,
-                    pointHoverRadius: 4
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    labels: {
-                        color: textColor,
-                        font: { size: 11, weight: 700 }
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: (context) => `Estoque: ${Number(context.parsed.y).toFixed(0)} peças`
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: {
-                        color: textColor,
-                        maxTicksLimit: 8
-                    },
-                    grid: {
-                        color: 'rgba(120, 140, 170, 0.18)'
-                    }
-                },
-                y: {
-                    beginAtZero: true,
-                    ticks: { color: textColor },
-                    grid: {
-                        color: 'rgba(120, 140, 170, 0.18)'
-                    },
-                    title: {
-                        display: true,
-                        text: 'Peças em estoque',
-                        color: textColor
-                    }
-                }
-            }
-        }
-    });
-    modalTrendChartFingerprint = fingerprintGrafico;
-}
-
 function fecharModal() {
     modalDetalhes.classList.remove('mostrar');
     modalContent?.classList.remove('modal-consumo');
@@ -1456,15 +1366,8 @@ function fecharModal() {
 }
 
 function destruirGraficosModal() {
-    limparHotspotsGraficoConsumo();
-
-    if (modalTrendChart) {
-        modalTrendChart.destroy();
-        modalTrendChart = null;
-    }
-    modalTrendChartFingerprint = '';
-
     if (graficoConsumoChart) {
+        removerHoverTooltipConsumo();
         graficoConsumoChart.destroy();
         graficoConsumoChart = null;
     }
@@ -1648,6 +1551,7 @@ function limparFiltros() {
         turno: 'todos',
         status: 'todos',
         ordem: 'urgencia',
+        limiteCards: 'todos',
         busca: ''
     };
 
@@ -1657,9 +1561,10 @@ function limparFiltros() {
         [filtroModeloEl, 'modelo', 'todos'],
         [filtroTurnoEl, 'turno', 'todos'],
         [filtroStatusEl, 'status', 'todos'],
-        [filtroOrdemEl, 'ordem', 'urgencia']
+        [filtroOrdemEl, 'ordem', 'urgencia'],
+        [filtroLimiteCardsEl, 'limiteCards', 'todos']
     ].forEach(([container, dataAttr, valor]) => {
-        container.querySelectorAll('.filtro-btn').forEach((btn) => {
+        container?.querySelectorAll('.filtro-btn').forEach((btn) => {
             btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
         });
     });
@@ -1971,3 +1876,7 @@ function mostrarErro(mensagem) {
     cardsContainer.classList.remove('modo-tabela');
     cardsContainer.innerHTML = `<div class="loading-cards" style="color: #d42f4a;">${escapeHtml(mensagem)}</div>`;
 }
+
+
+
+
