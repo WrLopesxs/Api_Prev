@@ -1061,29 +1061,6 @@ mark {
     position: relative;
 }
 
-.consumo-hotspots {
-    position: absolute;
-    z-index: 2;
-    pointer-events: none;
-}
-
-.consumo-hotspot {
-    position: absolute;
-    transform: translate(-50%, -50%);
-    border: 0;
-    border-radius: 50%;
-    background: transparent;
-    pointer-events: auto;
-    cursor: crosshair;
-    padding: 0;
-    margin: 0;
-}
-
-.consumo-hotspot:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 72%, #fff 28%);
-    outline-offset: 1px;
-}
-
 .consumo-resumo-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1145,6 +1122,49 @@ mark {
 :root[data-economico='true'] *::after {
     animation: none !important;
     transition: none !important;
+}
+
+:root[data-performance='low'] .bg-orb {
+    display: none;
+}
+
+:root[data-performance='low'] .container,
+:root[data-performance='low'] .filtro-group,
+:root[data-performance='low'] .filtros-acoes,
+:root[data-performance='low'] .kpi-card,
+:root[data-performance='low'] .pn-card,
+:root[data-performance='low'] .tabela-wrapper,
+:root[data-performance='low'] .modal-content,
+:root[data-performance='low'] .detail-box,
+:root[data-performance='low'] .detail-section,
+:root[data-performance='low'] .trend-chart-wrap,
+:root[data-performance='low'] .info-item,
+:root[data-performance='low'] .pn-previsao {
+    backdrop-filter: none !important;
+}
+
+:root[data-performance='low'] .pn-card::after {
+    display: none;
+}
+
+:root[data-performance='low'] .pn-card,
+:root[data-performance='low'] .kpi-card,
+:root[data-performance='low'] .btn-atualizar,
+:root[data-performance='low'] .btn-acao,
+:root[data-performance='low'] .btn-tema,
+:root[data-performance='low'] .filtro-btn {
+    box-shadow: none !important;
+    transition: none !important;
+    animation: none !important;
+}
+
+:root[data-performance='low'] .pn-card:hover,
+:root[data-performance='low'] .kpi-card:hover,
+:root[data-performance='low'] .btn-atualizar:hover:not(:disabled),
+:root[data-performance='low'] .btn-acao:hover:not(:disabled),
+:root[data-performance='low'] .filtro-btn:hover {
+    transform: none !important;
+    filter: none !important;
 }
 
 .loading {
