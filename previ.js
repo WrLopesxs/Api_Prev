@@ -1,5 +1,5 @@
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbzbXBOkRN2YiYremndvUXKXbvMAbqkJRPV8NvJEssARPoScg_bX5ysWbUrgZegEQ1FOGw/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbz4r8AKuIECHQ0LrB4KtdmeGGO9IU92E50CwVGs1dQOTEJGV-jxb3su6ZPc2mUlfoQZcw/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
 const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
 const DEBOUNCE_BUSCA_MS = 280;
