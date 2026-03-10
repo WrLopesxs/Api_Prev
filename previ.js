@@ -1,5 +1,5 @@
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbz4r8AKuIECHQ0LrB4KtdmeGGO9IU92E50CwVGs1dQOTEJGV-jxb3su6ZPc2mUlfoQZcw/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbze61HatBKb15biqGaHebWwxXB2HAc9PZT2ckVl6vDTSDSi4pkrE8kimhVFi82taIse/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
 const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
 const DEBOUNCE_BUSCA_MS = 280;
@@ -69,6 +69,7 @@ const kpiTotal = document.getElementById('kpiTotal');
 const kpiCritico = document.getElementById('kpiCritico');
 const kpiAtencao = document.getElementById('kpiAtencao');
 const kpiNormal = document.getElementById('kpiNormal');
+const kpiSemConsumo = document.getElementById('kpiSemConsumo');
 
 const modalDetalhes = document.getElementById('modalDetalhes');
 const modalTitulo = document.getElementById('modalTitulo');
@@ -84,9 +85,9 @@ document.addEventListener('DOMContentLoaded', () => {
     inicializarTema();
     inicializarModoEconomico();
     configurarEventos();
-    carregarDados({ silencioso: false });
-});
+    carregarDados();
 
+});
 function configurarEventos() {
     btnAtualizar.addEventListener('click', () => carregarDados({ silencioso: false }));
 
@@ -272,7 +273,8 @@ async function carregarDados(opcoes = {}) {
             throw new Error(data.erro || 'Resposta inválida da API');
         }
 
-        const novosDados = data.dados.filter((item) => itemPodeSerExibido(item));
+        const dadosNormalizados = data.dados.map((item) => normalizarItemEstoque(item));
+        const novosDados = dadosNormalizados.filter((item) => itemPodeSerExibido(item));
         const novoFingerprint = gerarFingerprintDados(novosDados);
         const dadosMudaram = novoFingerprint !== ultimoFingerprintDados;
 
@@ -468,11 +470,15 @@ function atualizarKPIs() {
     const criticos = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'critico').length;
     const atencao = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'atencao').length;
     const normal = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'normal').length;
+    const semConsumo = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'sem-consumo').length;
 
     kpiTotal.textContent = total;
     kpiCritico.textContent = criticos;
     kpiAtencao.textContent = atencao;
     kpiNormal.textContent = normal;
+    if (kpiSemConsumo) {
+        kpiSemConsumo.textContent = semConsumo;
+    }
 }
 
 function atualizarContadorResultados() {
@@ -607,6 +613,10 @@ function criarCardHTML(item) {
     const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
     const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
     const statusInfo = classificarCriticidade(item);
+    const divergencia = obterDivergenciaEstoque(item);
+    const divergenciaClasse = obterClasseDivergencia(divergencia);
+    const divergenciaTexto = formatarDivergenciaEstoque(divergencia);
+    const estoqueSistema = numeroSeguro(item.estoqueSistema, Number.NaN);
     const termoBusca = filtros.busca;
 
     const classes = [
@@ -627,11 +637,18 @@ function criarCardHTML(item) {
             <div class="pn-info">
                 <div class="info-item">
                     <div class="info-label">Estoque</div>
-                    <div class="info-value">${numeroSeguro(item.estoque)}</div>
+                    <div class="info-value">${numeroSeguro(item.estoqueFisico)}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Consumo/h</div>
                     <div class="info-value">${numeroSeguro(item.consumo).toFixed(1)}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Divergencia</div>
+                    <div class="info-value">
+                        <span class="divergencia-badge ${divergenciaClasse}">${divergenciaTexto}</span>
+                    </div>
+                    <div class="info-hint">TOIOS: ${Number.isFinite(estoqueSistema) ? estoqueSistema : '-'}</div>
                 </div>
             </div>
 
@@ -645,7 +662,7 @@ function criarCardHTML(item) {
                     <span class="previsao-value">${formatarDataHora(dataFim)}</span>
                 </div>
                 <div class="previsao-item">
-                    <span class="previsao-label">Turno:</span>
+                    <span class="previsao-label">Turno que acaba:</span>
                     <span class="pn-turno">${escapeHtml(String(item.turnoPrevisto))}º Turno</span>
                 </div>
             </div>
@@ -662,7 +679,7 @@ function renderizarTabela() {
 
     const dadosTabela = dadosFiltrados.filter((item) => {
         const status = classificarCriticidade(item).grupo;
-        return status !== 'sem-consumo' && status !== 'esgotado';
+        return status !== 'sem-consumo' && status !== 'critico';
     });
 
     if (dadosTabela.length === 0) {
@@ -682,13 +699,16 @@ function renderizarTabela() {
 
     const linhas = dadosTabela.map((item) => {
         const statusInfo = classificarCriticidade(item);
+        const divergencia = obterDivergenciaEstoque(item);
+        const divergenciaClasse = obterClasseDivergencia(divergencia);
         const termoBusca = filtros.busca;
 
         return `
             <tr class="linha-tabela" data-pn="${escapeHtml(item.pn)}">
                 <td>${destacarTexto(item.pn, termoBusca)}</td>
                 <td>${destacarTexto(item.modelo, termoBusca)}</td>
-                <td>${numeroSeguro(item.estoque)}</td>
+                <td>${numeroSeguro(item.estoqueFisico)}</td>
+                <td><span class="divergencia-badge ${divergenciaClasse}">${formatarDivergenciaEstoque(divergencia)}</span></td>
                 <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
                 <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
                 <td>${formatarDataHora(new Date(item.dataFim))}</td>
@@ -706,6 +726,7 @@ function renderizarTabela() {
                         <th data-sort="pn">PN${setaCampo('pn')}</th>
                         <th data-sort="modelo">Modelo${setaCampo('modelo')}</th>
                         <th data-sort="estoque">Estoque${setaCampo('estoque')}</th>
+                        <th data-sort="divergencia">Divergencia${setaCampo('divergencia')}</th>
                         <th data-sort="consumo">Consumo/h${setaCampo('consumo')}</th>
                         <th data-sort="autonomiaHoras">Autonomia${setaCampo('autonomiaHoras')}</th>
                         <th data-sort="dataFim">Previsão${setaCampo('dataFim')}</th>
@@ -756,9 +777,17 @@ function ordenarDadosTabela(lista) {
         } else if (campo === 'dataFim') {
             valorA = obterTimestampEsgotamento(a) ?? Number.POSITIVE_INFINITY;
             valorB = obterTimestampEsgotamento(b) ?? Number.POSITIVE_INFINITY;
-        } else if (['estoque', 'consumo', 'autonomiaHoras', 'turnoPrevisto'].includes(campo)) {
-            valorA = numeroSeguro(a[campo], Number.POSITIVE_INFINITY);
-            valorB = numeroSeguro(b[campo], Number.POSITIVE_INFINITY);
+        } else if (['estoque', 'divergencia', 'consumo', 'autonomiaHoras', 'turnoPrevisto'].includes(campo)) {
+            if (campo === 'estoque') {
+                valorA = numeroSeguro(a.estoqueFisico, Number.POSITIVE_INFINITY);
+                valorB = numeroSeguro(b.estoqueFisico, Number.POSITIVE_INFINITY);
+            } else if (campo === 'divergencia') {
+                valorA = numeroSeguro(obterDivergenciaEstoque(a), Number.POSITIVE_INFINITY);
+                valorB = numeroSeguro(obterDivergenciaEstoque(b), Number.POSITIVE_INFINITY);
+            } else {
+                valorA = numeroSeguro(a[campo], Number.POSITIVE_INFINITY);
+                valorB = numeroSeguro(b[campo], Number.POSITIVE_INFINITY);
+            }
         } else {
             valorA = normalizarTexto(a[campo]);
             valorB = normalizarTexto(b[campo]);
@@ -804,7 +833,7 @@ function abrirModal(pn) {
                 <h4>Detalhes do estoque</h4>
                 <div class="detail-row">
                     <span>Quantidade atual:</span>
-                    <strong>${numeroSeguro(item.estoque)} peças</strong>
+                    <strong>${numeroSeguro(item.estoqueFisico)} peças</strong>
                 </div>
                 <div class="detail-row">
                     <span>Consumo por hora:</span>
@@ -1119,73 +1148,115 @@ function renderizarGraficoConsumo() {
         graficoConsumoChart = null;
     }
 
-    graficoConsumoChart = new Chart(canvas, {
-        type: 'line',
-        data: {
-            labels,
-            datasets
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            resizeDelay: 120,
-            events: ['click', 'mouseout', 'touchstart', 'touchend'],
-            interaction: {
-                mode: 'point',
-                intersect: true
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        color: textColor,
-                        font: { size: 11, weight: 700 },
-                        boxWidth: 12
-                    }
-                },
-                tooltip: {
-                    enabled: true,
-                    mode: 'point',
-                    intersect: true,
-                    callbacks: {
-                        label: (context) => `${context.dataset.label}: ${Number(context.parsed.y).toFixed(0)} peças`,
-                        afterLabel: (context) => {
-                            const meta = context.dataset.metaInfo;
-                            return meta ? `Acaba em: ${meta.fimPrevisto}` : '';
-                        }
-                    }
+ graficoConsumoChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+        labels,
+        datasets
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis: 'y', // barras horizontais
+        animation: false,
+        resizeDelay: 120,
+
+        plugins: {
+            legend: {
+                labels: {
+                    color: textColor,
+                    font: { size: 11, weight: 700 },
+                    boxWidth: 12
                 }
             },
-            scales: {
-                x: {
-                    ticks: {
-                        color: textColor,
-                        maxRotation: 50,
-                        minRotation: 0
-                    },
-                    grid: {
-                        color: 'rgba(120, 140, 170, 0.1)'
-                    }
+
+           tooltip: {
+    callbacks: {
+
+        label: (context) => {
+
+            const horas = context.parsed.x.toFixed(1);
+            return `Acaba em ${horas} horas`;
+
+        },
+
+        afterLabel: (context) => {
+
+            const fim = context.dataset.metaInfo[context.dataIndex];
+
+            return `Horário: ${fim}`;
+
+        }
+
+    }
+}
+        },
+
+        scales: {
+            x: {
+                beginAtZero: true,
+                ticks: {
+                    color: textColor
                 },
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        color: textColor
-                    },
-                    grid: {
-                        color: 'rgba(120, 140, 170, 0.18)'
-                    },
-                    title: {
-                        display: true,
-                        text: 'Estoque restante',
-                        color: textColor
-                    }
+                grid: {
+                    color: 'rgba(120, 140, 170, 0.1)'
+                },
+                title: {
+                    display: true,
+                    text: 'Horas até esgotar',
+                    color: textColor
+                }
+            },
+
+            y: {
+                ticks: {
+                    color: textColor
+                },
+                grid: {
+                    color: 'rgba(120, 140, 170, 0.18)'
+                },
+                title: {
+                    display: true,
+                    text: 'Part Number',
+                    color: textColor
                 }
             }
         }
-    });
-    graficoConsumoFingerprint = fingerprintGrafico;
-    configurarHoverTooltipConsumo();
+    },
+
+   plugins: [{
+    id: 'linhaFim',
+
+    afterDatasetsDraw(chart) {
+
+        const { ctx } = chart;
+        const meta = chart.getDatasetMeta(0);
+
+        meta.data.forEach((barra) => {
+
+            const x = barra.x;
+            const y = barra.y;
+
+            ctx.save();
+
+            ctx.beginPath();
+            ctx.moveTo(x, y - 10);
+            ctx.lineTo(x, y + 10);
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#111';
+            ctx.stroke();
+
+            ctx.restore();
+
+        });
+
+    }
+}]
+});
+
+graficoConsumoFingerprint = fingerprintGrafico;
+configurarHoverTooltipConsumo();
 }
 
 function configurarHoverTooltipConsumo() {
@@ -1301,59 +1372,47 @@ function removerHoverTooltipConsumo() {
 }
 
 function gerarDatasetsGraficoConsumo(itens) {
-    const itensOrdenados = [...itens].sort((a, b) => {
-        const dataA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
-        const dataB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
-        return dataA - dataB;
-    });
-    const inicioComum = new Date();
-    const fimMaisDistante = itensOrdenados.reduce((maior, item) => {
-        const timestamp = obterTimestampSeguro(item.dataFim) ?? inicioComum.getTime();
-        return Math.max(maior, timestamp);
-    }, inicioComum.getTime());
-    const series = itensOrdenados.map((item) => ({
-        item,
-        serie: gerarSerieEstoqueReal(item, {
-            inicio: inicioComum,
-            fim: fimMaisDistante,
-            numPontos: NUM_PONTOS_GRAFICO
-        })
-    }));
-    const labels = series[0]?.serie?.labels || [];
 
-    const palette = [
-        '#e20d2a',
-        '#1894ff',
-        '#29c177',
-        '#f5bb2e',
-        '#8b5cf6',
-        '#ff7a18',
-        '#14b8a6',
-        '#ef4444',
-        '#3b82f6',
-        '#84cc16'
-    ];
+    const agora = new Date();
 
-    const datasets = series.map(({ item, serie }, index) => {
-        const cor = palette[index % palette.length];
-        return {
-            label: `${item.pn} (${item.modelo || '-'})`,
-            data: serie.valores,
-            borderColor: cor,
-            backgroundColor: `${cor}22`,
-            fill: false,
-            tension: 0.12,
-            pointRadius: 3,
-            pointHoverRadius: 5,
-            pointHitRadius: 0,
-            hitRadius: 0,
-            hoverRadius: 5,
-            borderWidth: 2,
-            metaInfo: {
-                fimPrevisto: serie.fimPrevisto
-            }
-        };
+    const itensOrdenados = [...itens].sort((a, b) =>
+        new Date(a.dataFim) - new Date(b.dataFim)
+    );
+
+    const labels = itensOrdenados.map(item => item.pn);
+
+    const valores = itensOrdenados.map(item => {
+
+        const fim = new Date(item.dataFim);
+
+        const horas = (fim - agora) / 3600000;
+
+        return Math.max(0, Number(horas.toFixed(2)));
+
     });
+
+    const horarios = itensOrdenados.map(item =>
+        formatarDataHora(new Date(item.dataFim))
+    );
+
+    const cores = itensOrdenados.map(item => {
+
+        const status = classificarCriticidade(item).grupo;
+
+        if (status === 'critico') return '#e20d2a';
+        if (status === 'atencao') return '#f5bb2e';
+        return '#29c177';
+
+    });
+
+    const datasets = [{
+        label: 'Horas até acabar',
+        data: valores,
+        backgroundColor: cores,
+        borderRadius: 6,
+        barThickness: 18,
+        metaInfo: horarios
+    }];
 
     return { labels, datasets };
 }
@@ -1375,63 +1434,68 @@ function destruirGraficosModal() {
 }
 
 function classificarCriticidade(item) {
-    const estoque = numeroSeguro(item.estoque, 0);
+    const estoque = numeroSeguro(item.estoqueFisico, 0);
     const consumo = numeroSeguro(item.consumo, 0);
     const autonomia = numeroSeguro(item.autonomiaHoras, 0);
 
+    // estoque zerado sempre crítico
+    if (estoque <= 0) {
+        return {
+            grupo: 'critico',
+            classeFaixa: 'critico-extremo',
+            label: 'Crítico (sem estoque)',
+            icones: '🔴 ❌',
+            tooltip: 'Item sem estoque disponível'
+        };
+    }
+
+    // sem consumo
     if (estoque > 0 && consumo <= 0) {
         return {
             grupo: 'sem-consumo',
             classeFaixa: 'sem-consumo-faixa',
             label: 'Sem consumo',
             icones: '⚪ ⏸',
-            tooltip: 'Item com estoque disponível, mas sem consumo registrado'
+            tooltip: 'Item com estoque mas sem consumo registrado'
         };
     }
 
-    if (autonomia <= 0) {
-        return {
-            grupo: 'esgotado',
-            classeFaixa: 'esgotado-faixa',
-            label: 'Esgotado',
-            icones: '⚫ ❌',
-            tooltip: 'Item esgotado'
-        };
-    }
-
-    if (autonomia < 4) {
+    // crítico até 5h
+    if (autonomia <= 5) {
         return {
             grupo: 'critico',
             classeFaixa: 'critico-extremo',
-            label: 'Crítico <4h',
+            label: 'Crítico ≤5h',
             icones: '🔴 ⚠️',
-            tooltip: 'Nível máximo de urgência (menor que 4h)'
+            tooltip: 'Autonomia menor ou igual a 5 horas'
         };
     }
 
-    if (autonomia < 8) {
+    // atenção 5 a 6h
+    if (autonomia > 5 && autonomia <= 6) {
         return {
             grupo: 'atencao',
             classeFaixa: 'atencao-faixa',
-            label: 'Atenção 4-8h',
+            label: 'Atenção 5-6h',
             icones: '🟡 ⏳',
-            tooltip: 'Acompanhar de perto (4h a 8h)'
+            tooltip: 'Autonomia entre 5 e 6 horas'
         };
     }
 
+    // ok acima de 7h
     return {
         grupo: 'normal',
         classeFaixa: 'normal-faixa',
-        label: 'OK >8h',
+        label: 'OK ≥7h',
         icones: '🟢 ✅',
-        tooltip: 'Situação estável (acima de 8h)'
+        tooltip: 'Autonomia maior ou igual a 7 horas'
     };
 }
 
 function gerarSerieEstoqueReal(item, opcoes = {}) {
     const agora = opcoes.inicio ? new Date(opcoes.inicio) : new Date();
     const dataFim = new Date(item.dataFim);
-    const estoqueInicial = numeroSeguro(item.estoque, 0);
+    const estoqueInicial = numeroSeguro(item.estoqueFisico, 0);
     const consumoHora = numeroSeguro(item.consumo, 0);
     const labels = [];
     const valores = [];
@@ -1486,7 +1550,7 @@ function exportarPDF() {
             <tr>
                 <td>${escapeHtml(item.pn)}</td>
                 <td>${escapeHtml(item.modelo)}</td>
-                <td>${numeroSeguro(item.estoque)}</td>
+                <td>${numeroSeguro(item.estoqueFisico)}</td>
                 <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
                 <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
                 <td>${escapeHtml(formatarDataHora(new Date(item.dataFim)))}</td>
@@ -1692,6 +1756,74 @@ function numeroSeguro(valor, fallback = 0) {
     return Number.isFinite(numero) ? numero : fallback;
 }
 
+function normalizarItemEstoque(item) {
+    const estoqueFisico = Number(item?.estoqueFisico);
+    const estoqueAntigo = Number(item?.estoque);
+    const estoquePrincipal = Number.isFinite(estoqueFisico)
+        ? estoqueFisico
+        : (Number.isFinite(estoqueAntigo) ? estoqueAntigo : 0);
+    const estoqueSistemaRaw = Number(item?.estoqueSistema);
+    const estoqueSistema = Number.isFinite(estoqueSistemaRaw) ? estoqueSistemaRaw : null;
+    const divergenciaRaw = Number(item?.divergencia);
+    let divergencia = null;
+    if (estoqueSistema !== null) {
+        divergencia = estoqueSistema === 0
+            ? estoquePrincipal
+            : (estoquePrincipal - estoqueSistema);
+    } else if (Number.isFinite(divergenciaRaw)) {
+        divergencia = divergenciaRaw;
+    }
+
+    return {
+        ...item,
+        estoqueFisico: estoquePrincipal,
+        estoqueSistema,
+        divergencia
+    };
+}
+
+function obterDivergenciaEstoque(item) {
+    const estoqueFisico = Number(item?.estoqueFisico);
+    const estoqueSistema = Number(item?.estoqueSistema);
+    if (Number.isFinite(estoqueFisico) && Number.isFinite(estoqueSistema)) {
+        return estoqueSistema === 0
+            ? estoqueFisico
+            : (estoqueFisico - estoqueSistema);
+    }
+
+    const divergencia = Number(item?.divergencia);
+    if (Number.isFinite(divergencia)) {
+        return divergencia;
+    }
+
+    return null;
+}
+
+function obterClasseDivergencia(valor) {
+    if (!Number.isFinite(valor)) {
+        return 'baixa';
+    }
+
+    const magnitude = Math.abs(valor);
+    if (magnitude <= 2) {
+        return 'baixa';
+    }
+    if (magnitude <= 10) {
+        return 'media';
+    }
+    return 'alta';
+}
+
+function formatarDivergenciaEstoque(valor) {
+    if (!Number.isFinite(valor)) {
+        return 'N/D';
+    }
+
+    const inteiro = Number.isInteger(valor);
+    const numeroFormatado = inteiro ? String(valor) : valor.toFixed(1);
+    return valor > 0 ? `+${numeroFormatado}` : numeroFormatado;
+}
+
 function gerarFingerprintDados(lista) {
     if (!Array.isArray(lista) || lista.length === 0) {
         return 'dados:0';
@@ -1707,12 +1839,16 @@ function gerarFingerprintDados(lista) {
 
 function gerarAssinaturaItem(item) {
     const timestampFim = obterTimestampSeguro(item?.dataFim);
+    const estoqueSistema = Number(item?.estoqueSistema);
+    const divergencia = obterDivergenciaEstoque(item);
 
     return [
         String(item?.pn ?? ''),
         String(item?.modelo ?? ''),
         String(item?.linha ?? ''),
-        numeroSeguro(item?.estoque, 0).toFixed(4),
+        numeroSeguro(item?.estoqueFisico, 0).toFixed(4),
+        Number.isFinite(estoqueSistema) ? estoqueSistema.toFixed(4) : '',
+        Number.isFinite(divergencia) ? divergencia.toFixed(4) : '',
         numeroSeguro(item?.consumo, 0).toFixed(4),
         numeroSeguro(item?.autonomiaHoras, 0).toFixed(4),
         timestampFim === null ? '' : String(timestampFim),
@@ -1808,13 +1944,13 @@ function obterTimestampEsgotamento(item) {
 }
 
 function itemPodeSerExibido(item) {
-    const estoque = numeroSeguro(item?.estoque, 0);
+    const estoque = numeroSeguro(item?.estoqueFisico, 0);
     const consumo = numeroSeguro(item?.consumo, 0);
     return !(estoque <= 0 && consumo <= 0);
 }
 
 function itemPodeAparecerNoGraficoConsumo(item) {
-    const estoque = numeroSeguro(item?.estoque, 0);
+    const estoque = numeroSeguro(item?.estoqueFisico, 0);
     const consumo = numeroSeguro(item?.consumo, 0);
     return estoque > 0 && consumo > 0;
 }
@@ -1876,7 +2012,3 @@ function mostrarErro(mensagem) {
     cardsContainer.classList.remove('modo-tabela');
     cardsContainer.innerHTML = `<div class="loading-cards" style="color: #d42f4a;">${escapeHtml(mensagem)}</div>`;
 }
-
-
-
-
