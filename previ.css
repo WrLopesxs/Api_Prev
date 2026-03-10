@@ -1,2014 +1,1353 @@
+:root {
+    --font-title: 'Space Grotesk', 'Segoe UI', sans-serif;
+    --font-body: 'Manrope', 'Segoe UI', sans-serif;
+
+    --bg-0: #edf4fb;
+    --bg-1: #dbe8f8;
+    --text: #0f2036;
+    --text-muted: #55627b;
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbze61HatBKb15biqGaHebWwxXB2HAc9PZT2ckVl6vDTSDSi4pkrE8kimhVFi82taIse/exec';
-const STORAGE_THEME_KEY = 'dashboard-theme';
-const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
-const DEBOUNCE_BUSCA_MS = 280;
-const CARDS_POR_LOTE = 24;
-const NUM_PONTOS_GRAFICO = 12;
-const LIMIAR_PERFORMANCE_VISUAL = 30;
-const LIMITE_PADRAO_GRAFICO_CONSUMO = '10';
-const LIMITE_SEGURANCA_GRAFICO_CONSUMO = 40;
-
-let dadosCompletos = [];
-let dadosFiltrados = [];
-let graficoConsumoChart = null;
-let graficoConsumoFingerprint = '';
-let modoVisualizacao = 'cards';
-let ordenacaoTabela = { campo: 'dataFim', direcao: 'asc' };
-let autoRefreshTimer = null;
-let autoRefreshIntervalSeconds = 0;
-let autoRefreshPausado = false;
-let autoRefreshStartedAt = null;
-let autoRefreshProgressTimer = null;
-let filtroModeloGraficoConsumo = 'todos';
-let limitePnGraficoConsumo = 'todos';
-let pnSelecionadoGraficoConsumo = 'todos';
-let handlerHoverGraficoConsumo = null;
-let ultimoHoverTooltipConsumo = '';
-let buscaDebounceTimer = null;
-let cardsVisiveis = [];
-let cursorCardsVisiveis = 0;
-let observerLazyCards = null;
-let ultimoFingerprintDados = '';
-let ultimoFingerprintModelos = '';
-let carregamentoEmAndamento = false;
-let limiteSegurancaGraficoAplicado = false;
-let totalItensGraficoAntesLimite = 0;
-
-let filtros = {
-    modelo: 'todos',
-    turno: 'todos',
-    status: 'todos',
-    ordem: 'urgencia',
-    limiteCards: 'todos',
-    busca: ''
-};
-
-const ultimaAtualizacaoEl = document.getElementById('ultimaAtualizacao');
-const cardsContainer = document.getElementById('cardsContainer');
-const btnAtualizar = document.getElementById('btnAtualizar');
-const btnLimparFiltros = document.getElementById('btnLimparFiltros');
-const btnGerarGraficoConsumo = document.getElementById('btnGerarGraficoConsumo');
-const btnExportarPdf = document.getElementById('btnExportarPdf');
-const btnModoVisao = document.getElementById('btnModoVisao');
-const btnPausarAutoRefresh = document.getElementById('btnPausarAutoRefresh');
-const autoRefreshSelect = document.getElementById('autoRefreshSelect');
-const autoRefreshStatus = document.getElementById('autoRefreshStatus');
-const autoRefreshCountdown = document.getElementById('autoRefreshCountdown');
-const autoRefreshProgressBar = document.getElementById('autoRefreshProgressBar');
-const buscaInput = document.getElementById('buscaInput');
-const resultadoContadorEl = document.getElementById('resultadoContador');
-
-const filtroModeloEl = document.getElementById('filtroModelo');
-const filtroTurnoEl = document.getElementById('filtroTurno');
-const filtroStatusEl = document.getElementById('filtroStatus');
-const filtroOrdemEl = document.getElementById('filtroOrdem');
-const filtroLimiteCardsEl = document.getElementById('filtroLimiteCards');
-
-const kpiTotal = document.getElementById('kpiTotal');
-const kpiCritico = document.getElementById('kpiCritico');
-const kpiAtencao = document.getElementById('kpiAtencao');
-const kpiNormal = document.getElementById('kpiNormal');
-const kpiSemConsumo = document.getElementById('kpiSemConsumo');
-
-const modalDetalhes = document.getElementById('modalDetalhes');
-const modalTitulo = document.getElementById('modalTitulo');
-const modalBody = document.getElementById('modalBody');
-const modalContent = modalDetalhes?.querySelector('.modal-content');
-
-const btnTema = document.getElementById('btnTema');
-const temaIcone = document.getElementById('temaIcone');
-const temaLabel = document.getElementById('temaLabel');
-const btnModoEconomico = document.getElementById('btnModoEconomico');
-
-document.addEventListener('DOMContentLoaded', () => {
-    inicializarTema();
-    inicializarModoEconomico();
-    configurarEventos();
-    carregarDados();
-
-});
-function configurarEventos() {
-    btnAtualizar.addEventListener('click', () => carregarDados({ silencioso: false }));
-
-    filtroModeloEl.addEventListener('click', (e) => {
-        if (e.target.classList.contains('filtro-btn')) {
-            atualizarFiltro('modelo', e.target.dataset.modelo);
-        }
-    });
-
-    filtroTurnoEl.addEventListener('click', (e) => {
-        if (e.target.classList.contains('filtro-btn')) {
-            atualizarFiltro('turno', e.target.dataset.turno);
-        }
-    });
-
-    filtroStatusEl.addEventListener('click', (e) => {
-        if (e.target.classList.contains('filtro-btn')) {
-            atualizarFiltro('status', e.target.dataset.status);
-        }
-    });
-
-    filtroOrdemEl.addEventListener('click', (e) => {
-        if (e.target.classList.contains('filtro-btn')) {
-            atualizarFiltro('ordem', e.target.dataset.ordem);
-        }
-    });
-
-    filtroLimiteCardsEl?.addEventListener('click', (e) => {
-        if (e.target.classList.contains('filtro-btn')) {
-            atualizarFiltro('limiteCards', e.target.dataset.limiteCards);
-        }
-    });
-
-    buscaInput.addEventListener('input', (e) => {
-        if (buscaDebounceTimer) {
-            clearTimeout(buscaDebounceTimer);
-        }
-
-        const termo = e.target.value.trim();
-        buscaDebounceTimer = setTimeout(() => {
-            filtros.busca = termo;
-            aplicarFiltros();
-        }, DEBOUNCE_BUSCA_MS);
-    });
-
-    btnLimparFiltros.addEventListener('click', limparFiltros);
-    btnGerarGraficoConsumo.addEventListener('click', abrirModalGraficoConsumo);
-    btnExportarPdf.addEventListener('click', exportarPDF);
-    btnPausarAutoRefresh.addEventListener('click', alternarPausaAutoRefresh);
-
-    autoRefreshSelect.addEventListener('change', (e) => {
-        autoRefreshIntervalSeconds = Number(e.target.value) || 0;
-        autoRefreshPausado = false;
-        atualizarBotaoAutoRefresh();
-        configurarAutoRefresh();
-    });
-
-    btnModoVisao.addEventListener('click', () => {
-        modoVisualizacao = modoVisualizacao === 'cards' ? 'tabela' : 'cards';
-        atualizarTextoModoVisao();
-        renderizarCards();
-    });
-
-    if (btnTema) {
-        btnTema.addEventListener('click', alternarTema);
-    }
-    if (btnModoEconomico) {
-        btnModoEconomico.addEventListener('click', alternarModoEconomico);
-    }
+    --surface: rgba(255, 255, 255, 0.58);
+    --surface-strong: rgba(255, 255, 255, 0.72);
+    --border-soft: rgba(255, 255, 255, 0.55);
+    --border-hard: rgba(170, 190, 218, 0.35);
+
+    --primary: #e20d2a;
+    --primary-dark: #b5071f;
+    --accent: #1894ff;
+
+    --critical-color: #f1546c;
+    --warning-color: #f5bb2e;
+    --normal-color: #29c177;
+    --empty-color: #7f8b9d;
+
+    --glass-shadow: 0 25px 55px rgba(18, 40, 72, 0.16);
+    --hover-shadow: 0 20px 35px rgba(14, 33, 63, 0.2);
+
+    --blur: blur(18px) saturate(155%);
+    --radius-lg: 24px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
 
-    cardsContainer.addEventListener('click', (e) => {
-        const card = e.target.closest('.pn-card');
-        if (!card || !cardsContainer.contains(card)) {
-            return;
-        }
+    --transition: 220ms ease;
+}
+
+:root[data-theme='dark'] {
+    --bg-0: #09111d;
+    --bg-1: #111f33;
+    --text: #f1f6ff;
+    --text-muted: #9fb0c9;
+
+    --surface: rgba(13, 24, 39, 0.58);
+    --surface-strong: rgba(17, 29, 47, 0.74);
+    --border-soft: rgba(127, 156, 196, 0.22);
+    --border-hard: rgba(97, 126, 164, 0.28);
+
+    --primary: #ff4d6a;
+    --primary-dark: #d33752;
+    --accent: #56b3ff;
 
-        abrirModal(card.dataset.pn);
-    });
+    --critical-color: #ff738a;
+    --warning-color: #ffd157;
+    --normal-color: #5ce2a0;
+    --empty-color: #b5bfd2;
+
+    --glass-shadow: 0 26px 50px rgba(0, 0, 0, 0.42);
+    --hover-shadow: 0 20px 35px rgba(0, 0, 0, 0.52);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
 
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modalDetalhes.classList.contains('mostrar')) {
-            fecharModal();
-        }
-    });
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    min-height: 100vh;
+    padding: 20px;
+    overflow-x: hidden;
+    font-family: var(--font-body);
+    color: var(--text);
+    background:
+        radial-gradient(1200px 700px at 5% 5%, rgba(31, 142, 255, 0.22) 0%, transparent 52%),
+        radial-gradient(1000px 600px at 90% 10%, rgba(255, 80, 80, 0.16) 0%, transparent 54%),
+        linear-gradient(150deg, var(--bg-0) 0%, var(--bg-1) 100%);
+}
+
+.bg-orb {
+    position: fixed;
+    pointer-events: none;
+    border-radius: 50%;
+    filter: blur(58px);
+    opacity: 0.6;
+    z-index: 0;
+}
+
+.orb-1 {
+    width: 340px;
+    height: 340px;
+    top: -90px;
+    left: -60px;
+    background: rgba(58, 156, 255, 0.42);
+}
 
-    modalDetalhes.addEventListener('click', (e) => {
-        if (e.target === modalDetalhes) {
-            fecharModal();
-        }
-    });
+.orb-2 {
+    width: 360px;
+    height: 360px;
+    right: -110px;
+    bottom: 10%;
+    background: rgba(236, 47, 76, 0.34);
+}
+
+.container {
+    position: relative;
+    z-index: 1;
+    max-width: 1400px;
+    margin: 0 auto;
+    border-radius: 30px;
+    border: 1px solid var(--border-soft);
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    box-shadow: var(--glass-shadow);
+    overflow: hidden;
+    animation: panel-in 440ms ease;
+}
+
+@keyframes panel-in {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.header {
+    padding: 26px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: linear-gradient(135deg, rgba(8, 26, 45, 0.9), rgba(13, 35, 59, 0.82));
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
 
-    atualizarTextoModoVisao();
-    atualizarBotaoAutoRefresh();
+.logo h1 {
+    font-family: var(--font-title);
+    letter-spacing: 3px;
+    font-size: clamp(1.75rem, 2.8vw, 2.15rem);
+    color: #ffffff;
+}
+
+.logo span {
+    margin-top: 4px;
+    display: inline-block;
+    color: rgba(235, 243, 255, 0.82);
+    font-size: 0.95rem;
+    letter-spacing: 0.2px;
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.btn-tema {
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    height: 42px;
+    border-radius: 999px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font: 700 0.86rem/1 var(--font-body);
+    transition: transform var(--transition), background var(--transition), box-shadow var(--transition);
+    backdrop-filter: blur(9px);
+}
+
+.btn-tema:hover {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
 }
 
-function inicializarTema() {
-    const temaSalvo = localStorage.getItem(STORAGE_THEME_KEY);
-    const prefereEscuro = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const temaInicial = temaSalvo || (prefereEscuro ? 'dark' : 'light');
-    aplicarTema(temaInicial, false);
+.btn-tema[aria-pressed='true'] {
+    border-color: rgba(255, 255, 255, 0.52);
+    background: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 12px 22px rgba(0, 0, 0, 0.24);
 }
 
-function alternarTema() {
-    const temaAtual = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
-    const proximoTema = temaAtual === 'dark' ? 'light' : 'dark';
-    aplicarTema(proximoTema, true);
+.tema-icone {
+    font-size: 0.95rem;
 }
 
-function aplicarTema(tema, salvar) {
-    const temaFinal = tema === 'dark' ? 'dark' : 'light';
-    document.documentElement.dataset.theme = temaFinal;
+.ultima-atualizacao {
+    font-size: 0.83rem;
+    letter-spacing: 0.2px;
+    color: rgba(227, 238, 255, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    padding: 10px 14px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(8px);
+}
 
-    if (salvar) {
-        localStorage.setItem(STORAGE_THEME_KEY, temaFinal);
-    }
+.filtros-container {
+    padding: 24px 26px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border-hard);
+    background: linear-gradient(130deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
+}
 
-    atualizarBotaoTema(temaFinal);
+.filtros-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
 }
 
-function atualizarBotaoTema(tema) {
-    if (!temaIcone || !temaLabel) {
-        return;
-    }
+.filtros-header h2 {
+    font: 800 1rem/1.1 var(--font-title);
+    color: var(--text);
+}
 
-    if (tema === 'dark') {
-        temaIcone.textContent = '☀';
-        temaLabel.textContent = 'Modo claro';
-    } else {
-        temaIcone.textContent = '🌙';
-        temaLabel.textContent = 'Modo escuro';
-    }
+.filtros-header p {
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 0.84rem;
 }
 
-function inicializarModoEconomico() {
-    const economicoSalvo = localStorage.getItem(STORAGE_ECONOMICO_KEY);
-    const ativo = economicoSalvo === '1';
-    aplicarModoEconomico(ativo, false);
+.filtros-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
 }
 
-function alternarModoEconomico() {
-    const atual = document.documentElement.dataset.economico === 'true';
-    aplicarModoEconomico(!atual, true);
+.filtro-group {
+    background: var(--surface-strong);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    padding: 14px;
+    backdrop-filter: blur(10px);
+    min-height: 100%;
+    box-shadow: 0 10px 22px rgba(17, 37, 66, 0.08);
 }
 
-function aplicarModoEconomico(ativo, salvar) {
-    document.documentElement.dataset.economico = ativo ? 'true' : 'false';
+.filtro-group label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 0.77rem;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
 
-    if (salvar) {
-        localStorage.setItem(STORAGE_ECONOMICO_KEY, ativo ? '1' : '0');
-    }
+.filtro-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
 
-    if (btnModoEconomico) {
-        btnModoEconomico.textContent = ativo ? 'Modo econômico: ligado' : 'Modo econômico: desligado';
-        btnModoEconomico.setAttribute('aria-pressed', ativo ? 'true' : 'false');
-    }
+.filtro-btn {
+    height: 34px;
+    padding: 0 13px;
+    border-radius: 999px;
+    border: 1px solid var(--border-hard);
+    background: rgba(255, 255, 255, 0.42);
+    color: var(--text);
+    font: 700 0.78rem/1 var(--font-body);
+    cursor: pointer;
+    transition: transform var(--transition), border-color var(--transition), background var(--transition), color var(--transition), box-shadow var(--transition);
+}
 
-    atualizarModoPerformanceAutomatico(modoVisualizacao === 'cards' ? cardsVisiveis.length : dadosFiltrados.length);
+:root[data-theme='dark'] .filtro-btn {
+    background: rgba(20, 35, 54, 0.45);
 }
 
-async function carregarDados(opcoes = {}) {
-    const { silencioso = false } = opcoes;
-    if (carregamentoEmAndamento) {
-        return;
-    }
+.filtro-btn:hover {
+    border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+    transform: translateY(-1px);
+}
 
-    carregamentoEmAndamento = true;
-    const limparCardsDuranteLoading = dadosCompletos.length === 0;
+.filtro-btn.ativo {
+    color: #fff;
+    border-color: transparent;
+    background: linear-gradient(140deg, var(--primary), var(--primary-dark));
+    box-shadow: 0 12px 22px rgba(226, 13, 42, 0.35);
+}
 
-    if (!silencioso) {
-        mostrarLoading(true, limparCardsDuranteLoading);
-    }
+.filtro-busca-group {
+    min-width: 240px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+}
 
-    try {
-        const response = await fetch(API_URL);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        if (data.status !== 'ok' || !Array.isArray(data.dados)) {
-            throw new Error(data.erro || 'Resposta inválida da API');
-        }
-
-        const dadosNormalizados = data.dados.map((item) => normalizarItemEstoque(item));
-        const novosDados = dadosNormalizados.filter((item) => itemPodeSerExibido(item));
-        const novoFingerprint = gerarFingerprintDados(novosDados);
-        const dadosMudaram = novoFingerprint !== ultimoFingerprintDados;
-
-        if (!dadosMudaram) {
-            atualizarTextoUltimaAtualizacao(data.ultimaAtualizacao, true);
-            return;
-        }
-
-        dadosCompletos = novosDados;
-        ultimoFingerprintDados = novoFingerprint;
-
-        const modelos = [...new Set(dadosCompletos.map((item) => item.modelo).filter(Boolean))].sort();
-        atualizarFiltrosModelo(modelos);
-        atualizarTextoUltimaAtualizacao(data.ultimaAtualizacao, false);
-        aplicarFiltros();
-    } catch (error) {
-        console.error('Erro ao carregar dados:', error);
-        if (silencioso) {
-            ultimaAtualizacaoEl.textContent = `Falha na checagem automática (${formatarHora(new Date())})`;
-        } else {
-            mostrarErro('Erro de conexão com a API. Tente novamente.');
-        }
-    } finally {
-        carregamentoEmAndamento = false;
-        if (!silencioso) {
-            mostrarLoading(false);
-        }
-    }
+.busca-input {
+    width: 100%;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--border-hard);
+    background: rgba(255, 255, 255, 0.42);
+    padding: 0 10px;
+    color: var(--text);
+    font-size: 0.85rem;
+    outline: none;
 }
 
-function atualizarTextoUltimaAtualizacao(ultimaAtualizacaoApi, semMudanca) {
-    if (ultimaAtualizacaoApi) {
-        const dataAtualizacao = new Date(ultimaAtualizacaoApi);
-        const prefixo = semMudanca ? 'Sem mudanças (checado em):' : 'Atualizado:';
-        ultimaAtualizacaoEl.textContent = `${prefixo} ${formatarDataHora(dataAtualizacao)}`;
-        return;
-    }
+:root[data-theme='dark'] .busca-input {
+    background: rgba(20, 35, 54, 0.45);
+}
 
-    ultimaAtualizacaoEl.textContent = semMudanca ? 'Sem mudanças detectadas' : 'Atualizado agora';
+.busca-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(24, 148, 255, 0.2);
 }
 
-function atualizarFiltrosModelo(modelos) {
-    if (!modelos.includes(filtros.modelo)) {
-        filtros.modelo = 'todos';
-    }
+.resultado-contador {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
 
-    const fingerprintModelos = gerarFingerprintListaModelos(modelos);
-    if (fingerprintModelos === ultimoFingerprintModelos) {
-        return;
-    }
+.filtros-acoes {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 16px 18px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--surface-strong) 88%, transparent);
+    box-shadow: 0 10px 22px rgba(17, 37, 66, 0.08);
+}
 
-    const html = [
-        `<button class="filtro-btn ${filtros.modelo === 'todos' ? 'ativo' : ''}" data-modelo="todos">Todos</button>`
-    ];
+.acoes-principais,
+.acoes-auto-refresh {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 10px;
+}
 
-    modelos.forEach((modelo) => {
-        const ativo = filtros.modelo === modelo ? 'ativo' : '';
-        html.push(`<button class="filtro-btn ${ativo}" data-modelo="${escapeHtml(modelo)}">${escapeHtml(modelo)}</button>`);
-    });
+.auto-refresh-progress-wrap {
+    display: grid;
+    gap: 8px;
+    padding: 14px 18px 0;
+    border-top: 1px solid var(--border-hard);
+}
 
-    filtroModeloEl.innerHTML = html.join('');
-    ultimoFingerprintModelos = fingerprintModelos;
+.auto-refresh-progress-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-muted);
 }
 
-function atualizarFiltro(tipo, valor) {
-    filtros[tipo] = valor;
+.auto-refresh-progress-track {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.4);
+    border: 1px solid var(--border-soft);
+}
 
-    const config = {
-        modelo: { container: filtroModeloEl, dataAttr: 'modelo' },
-        turno: { container: filtroTurnoEl, dataAttr: 'turno' },
-        status: { container: filtroStatusEl, dataAttr: 'status' },
-        ordem: { container: filtroOrdemEl, dataAttr: 'ordem' },
-        limiteCards: { container: filtroLimiteCardsEl, dataAttr: 'limiteCards' }
-    };
+:root[data-theme='dark'] .auto-refresh-progress-track {
+    background: rgba(20, 35, 54, 0.4);
+}
 
-    const itemConfig = config[tipo];
-    if (itemConfig?.container) {
-        const { container, dataAttr } = itemConfig;
+.auto-refresh-progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #27b36a, #1894ff);
+    transition: width 1s linear, background var(--transition);
+}
 
-        container.querySelectorAll('.filtro-btn').forEach((btn) => {
-            btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
-        });
-    }
+.auto-refresh-progress-bar.pausado {
+    background: linear-gradient(90deg, #f5bb2e, #ff8a33);
+}
 
-    aplicarFiltros();
+.auto-refresh-progress-bar.desligado {
+    background: linear-gradient(90deg, #8492a6, #64748b);
 }
 
-function aplicarFiltros() {
-    dadosFiltrados = dadosCompletos.filter((item) => itemPassaFiltros(item));
-    ordenarDadosFiltrados();
+.auto-refresh-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 170px;
+}
 
-    atualizarKPIs();
-    atualizarContadorResultados();
-    renderizarCards();
+.auto-refresh-box label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-muted);
 }
 
-function itemPassaFiltros(item, opcoes = {}) {
-    const {
-        ignorarStatus = false,
-        ignorarTurno = false,
-        ignorarBusca = false,
-        ignorarModelo = false
-    } = opcoes;
+.auto-refresh-select {
+    height: 42px;
+    border-radius: 999px;
+    border: 1px solid var(--border-hard);
+    background: rgba(255, 255, 255, 0.55);
+    color: var(--text);
+    padding: 0 14px;
+    font: 700 0.84rem/1 var(--font-body);
+    outline: none;
+}
 
-    if (!itemPodeSerExibido(item)) {
-        return false;
-    }
+:root[data-theme='dark'] .auto-refresh-select {
+    background: rgba(20, 35, 54, 0.45);
+}
 
-    if (!ignorarModelo && filtros.modelo !== 'todos' && item.modelo !== filtros.modelo) {
-        return false;
-    }
+.btn-atualizar,
+.btn-acao {
+    border: none;
+    border-radius: 999px;
+    height: 42px;
+    padding: 0 16px;
+    color: #fff;
+    font: 700 0.86rem/1 var(--font-body);
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: transform var(--transition), box-shadow var(--transition), filter var(--transition), opacity var(--transition);
+}
 
-    if (!ignorarTurno && filtros.turno !== 'todos' && String(item.turnoPrevisto) !== String(filtros.turno)) {
-        return false;
-    }
+.btn-atualizar {
+    background: linear-gradient(140deg, #19395f, #1c5286);
+    box-shadow: 0 14px 24px rgba(22, 59, 98, 0.35);
+}
 
-    const statusInfo = classificarCriticidade(item);
-    if (!ignorarStatus && filtros.status !== 'todos' && statusInfo.grupo !== filtros.status) {
-        return false;
-    }
+.btn-acao {
+    background: linear-gradient(140deg, #436486, #2f4f72);
+    box-shadow: 0 10px 18px rgba(21, 45, 71, 0.28);
+}
 
-    if (!ignorarBusca && filtros.busca) {
-        const busca = normalizarTexto(filtros.busca);
-        const campos = [item.pn, item.modelo, item.linha, statusInfo.label, statusInfo.grupo];
-        const encontrou = campos.some((campo) => normalizarTexto(campo).includes(busca));
-        if (!encontrou) {
-            return false;
-        }
-    }
+.btn-atualizar:hover:not(:disabled),
+.btn-acao:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.05);
+}
 
-    return true;
-}
-
-function ordenarDadosFiltrados() {
-    dadosFiltrados.sort((a, b) => {
-        const statusA = classificarCriticidade(a);
-        const statusB = classificarCriticidade(b);
-        const dataA = obterTimestampEsgotamento(a);
-        const dataB = obterTimestampEsgotamento(b);
-
-        if (statusA.grupo === 'sem-consumo' && statusB.grupo !== 'sem-consumo') {
-            return 1;
-        }
-
-        if (statusA.grupo !== 'sem-consumo' && statusB.grupo === 'sem-consumo') {
-            return -1;
-        }
-
-        if (filtros.ordem === 'urgencia') {
-            const autonomiaA = numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY);
-            const autonomiaB = numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY);
-            if (autonomiaA !== autonomiaB) {
-                return autonomiaA - autonomiaB;
-            }
-
-            if (dataA === null && dataB === null) {
-                return 0;
-            }
-
-            if (dataA === null) {
-                return 1;
-            }
-
-            if (dataB === null) {
-                return -1;
-            }
-
-            return dataA - dataB;
-        }
-
-        if (dataA === null && dataB === null) {
-            return 0;
-        }
-
-        if (dataA === null) {
-            return 1;
-        }
-
-        if (dataB === null) {
-            return -1;
-        }
-
-        if (filtros.ordem === 'asc') {
-            return dataA - dataB;
-        }
-
-        return dataB - dataA;
-    });
-}
-
-function atualizarKPIs() {
-    const total = dadosFiltrados.length;
-    const criticos = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'critico').length;
-    const atencao = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'atencao').length;
-    const normal = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'normal').length;
-    const semConsumo = dadosFiltrados.filter(item => classificarCriticidade(item).grupo === 'sem-consumo').length;
-
-    kpiTotal.textContent = total;
-    kpiCritico.textContent = criticos;
-    kpiAtencao.textContent = atencao;
-    kpiNormal.textContent = normal;
-    if (kpiSemConsumo) {
-        kpiSemConsumo.textContent = semConsumo;
-    }
+.btn-atualizar:disabled,
+.btn-acao:disabled {
+    cursor: wait;
+    opacity: 0.75;
 }
 
-function atualizarContadorResultados() {
-    resultadoContadorEl.textContent = `${dadosFiltrados.length} resultado(s)`;
-}
-function renderizarCards() {
-    if (dadosFiltrados.length === 0) {
-        desconectarObserverLazyCards();
-        cardsVisiveis = [];
-        cursorCardsVisiveis = 0;
-        atualizarModoPerformanceAutomatico(0);
-        cardsContainer.classList.remove('modo-tabela');
-        cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item encontrado com os filtros atuais.</div>';
-        return;
-    }
+.kpi-container {
+    padding: 22px 26px 8px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
 
-    if (modoVisualizacao === 'tabela') {
-        desconectarObserverLazyCards();
-        atualizarModoPerformanceAutomatico(dadosFiltrados.length);
-        renderizarTabela();
-        return;
-    }
+.kpi-card {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-soft);
+    background: var(--surface-strong);
+    backdrop-filter: blur(9px);
+    padding: 20px 16px;
+    box-shadow: 0 12px 24px rgba(17, 37, 66, 0.12);
+    transition: transform var(--transition), box-shadow var(--transition);
+    position: relative;
+    overflow: hidden;
+}
 
-    cardsContainer.classList.remove('modo-tabela');
-    cardsVisiveis = obterListaLimitadaCards(dadosFiltrados);
-    atualizarModoPerformanceAutomatico(cardsVisiveis.length);
-    cursorCardsVisiveis = 0;
-    cardsContainer.innerHTML = '';
-    carregarProximoLoteCards();
+.kpi-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 3px;
 }
 
-function obterListaLimitadaCards(lista) {
-    if (filtros.limiteCards === 'todos') {
-        return [...lista];
-    }
+.kpi-card.total::before { background: var(--accent); }
+.kpi-card.critico::before { background: var(--critical-color); }
+.kpi-card.atencao::before { background: var(--warning-color); }
+.kpi-card.normal::before { background: var(--normal-color); }
+.kpi-card.sem-consumo::before { background: #94a3b8; }
 
-    const limite = Number(filtros.limiteCards);
-    if (!Number.isFinite(limite) || limite <= 0) {
-        return [...lista];
-    }
+.kpi-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--hover-shadow);
+}
 
-    return lista.slice(0, limite);
+.kpi-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 8px;
 }
 
-function atualizarModoPerformanceAutomatico(totalItens) {
-    const root = document.documentElement;
-    const modoEconomicoAtivo = root.dataset.economico === 'true';
+.kpi-value {
+    font: 800 clamp(1.65rem, 3vw, 2.2rem)/1 var(--font-title);
+    color: var(--text);
+}
 
-    if (modoEconomicoAtivo) {
-        root.dataset.performance = 'low';
-        return;
-    }
+.cards-grid {
+    padding: 4px 26px 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+}
 
-    root.dataset.performance = totalItens >= LIMIAR_PERFORMANCE_VISUAL ? 'low' : 'normal';
+.cards-grid.modo-tabela {
+    display: block;
 }
 
-function carregarProximoLoteCards() {
-    if (cursorCardsVisiveis >= cardsVisiveis.length) {
-        atualizarSentinelaLazyCards();
-        return;
-    }
+.tabela-wrapper {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-soft);
+    background: var(--surface-strong);
+    backdrop-filter: blur(9px);
+    box-shadow: 0 12px 24px rgba(17, 37, 66, 0.12);
+    overflow: auto;
+}
 
-    cardsContainer.querySelector('.cards-sentinel')?.remove();
+.tabela-lista {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 1040px;
+}
 
-    const fimLote = Math.min(cursorCardsVisiveis + CARDS_POR_LOTE, cardsVisiveis.length);
-    const lote = cardsVisiveis.slice(cursorCardsVisiveis, fimLote);
-    const htmlLote = lote.map((item) => criarCardHTML(item)).join('');
+.tabela-lista th,
+.tabela-lista td {
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--border-hard);
+    font-size: 0.82rem;
+    text-align: left;
+    color: var(--text);
+}
 
-    cardsContainer.insertAdjacentHTML('beforeend', htmlLote);
-    cursorCardsVisiveis = fimLote;
-    atualizarSentinelaLazyCards();
+.tabela-lista th {
+    position: sticky;
+    top: 0;
+    background: color-mix(in srgb, var(--surface-strong) 90%, #000 10%);
+    cursor: pointer;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+    z-index: 1;
 }
 
-function atualizarSentinelaLazyCards() {
-    if (cursorCardsVisiveis >= cardsVisiveis.length) {
-        desconectarObserverLazyCards();
-        cardsContainer.querySelector('.cards-sentinel')?.remove();
-        return;
-    }
+.tabela-lista tr:hover td {
+    background: color-mix(in srgb, var(--surface-strong) 72%, var(--accent) 8%);
+}
 
-    let sentinela = cardsContainer.querySelector('.cards-sentinel');
-    if (!sentinela) {
-        sentinela = document.createElement('div');
-        sentinela.className = 'cards-sentinel';
-    }
+.tabela-lista .status-cell {
+    font-weight: 700;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 0;
+    padding: 4px 10px;
+    font-size: 0.72rem;
+}
 
-    sentinela.textContent = `Role para carregar mais (${cursorCardsVisiveis}/${cardsVisiveis.length})`;
-    cardsContainer.appendChild(sentinela);
-    observarSentinelaCards(sentinela);
+.linha-urgente td:first-child {
+    color: var(--critical-color);
+    font-weight: 900;
 }
 
-function observarSentinelaCards(sentinela) {
-    if (typeof IntersectionObserver === 'undefined') {
-        cardsContainer.querySelector('.cards-sentinel')?.remove();
+.loading-cards {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--text-muted);
+    padding: 44px 12px;
+    font-weight: 600;
+}
 
-        while (cursorCardsVisiveis < cardsVisiveis.length) {
-            const fimLote = Math.min(cursorCardsVisiveis + CARDS_POR_LOTE, cardsVisiveis.length);
-            const lote = cardsVisiveis.slice(cursorCardsVisiveis, fimLote);
-            const htmlLote = lote.map((item) => criarCardHTML(item)).join('');
-            cardsContainer.insertAdjacentHTML('beforeend', htmlLote);
-            cursorCardsVisiveis = fimLote;
-        }
+.cards-sentinel {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--text-muted);
+    padding: 18px 12px 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+}
 
-        return;
-    }
+mark {
+    background: color-mix(in srgb, var(--warning-color) 40%, transparent);
+    color: inherit;
+    border-radius: 4px;
+    padding: 0 2px;
+}
 
-    if (!observerLazyCards) {
-        observerLazyCards = new IntersectionObserver((entries) => {
-            const entrouNaTela = entries.some((entry) => entry.isIntersecting);
-            if (entrouNaTela) {
-                carregarProximoLoteCards();
-            }
-        }, {
-            root: null,
-            rootMargin: '320px 0px',
-            threshold: 0.01
-        });
-    }
+.pn-card {
+    position: relative;
+    overflow: hidden;
+    contain: layout paint;
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border-soft));
+    background: var(--surface-strong);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 22px 30px rgba(17, 37, 66, 0.16);
+    padding: 18px;
+    cursor: pointer;
+    transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+    animation: card-in 380ms ease;
+}
 
-    observerLazyCards.disconnect();
-    observerLazyCards.observe(sentinela);
+.pn-card::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, rgba(24, 148, 255, 0.9), rgba(226, 13, 42, 0.72));
 }
 
-function desconectarObserverLazyCards() {
-    if (observerLazyCards) {
-        observerLazyCards.disconnect();
-    }
+.pn-card::after {
+    content: '';
+    position: absolute;
+    width: 180px;
+    height: 180px;
+    top: -84px;
+    right: -72px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(48, 139, 235, 0.2) 0%, transparent 68%);
+    pointer-events: none;
 }
 
-function criarCardHTML(item) {
-    const dataFim = new Date(item.dataFim);
-    const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
-    const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
-    const statusInfo = classificarCriticidade(item);
-    const divergencia = obterDivergenciaEstoque(item);
-    const divergenciaClasse = obterClasseDivergencia(divergencia);
-    const divergenciaTexto = formatarDivergenciaEstoque(divergencia);
-    const estoqueSistema = numeroSeguro(item.estoqueSistema, Number.NaN);
-    const termoBusca = filtros.busca;
-
-    const classes = [
-        'pn-card',
-        statusInfo.grupo,
-        statusInfo.classeFaixa
-    ].filter(Boolean).join(' ');
-
-    return `
-        <article class="${classes}" id="card-${criarIdSeguro(item.pn)}" data-pn="${escapeHtml(item.pn)}">
-            <div class="pn-topbar">
-                <div class="pn-header">
-                    <span class="pn-nome">${destacarTexto(item.pn, termoBusca)}</span>
-                </div>
-                <span class="pn-modelo">${destacarTexto(item.modelo, termoBusca)}</span>
-            </div>
-
-            <div class="pn-info">
-                <div class="info-item">
-                    <div class="info-label">Estoque</div>
-                    <div class="info-value">${numeroSeguro(item.estoqueFisico)}</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">Consumo/h</div>
-                    <div class="info-value">${numeroSeguro(item.consumo).toFixed(1)}</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">Divergencia</div>
-                    <div class="info-value">
-                        <span class="divergencia-badge ${divergenciaClasse}">${divergenciaTexto}</span>
-                    </div>
-                    <div class="info-hint">TOIOS: ${Number.isFinite(estoqueSistema) ? estoqueSistema : '-'}</div>
-                </div>
-            </div>
-
-            <div class="pn-previsao">
-                <div class="previsao-item">
-                    <span class="previsao-label">Autonomia:</span>
-                    <span class="previsao-value">${autonomiaHoras}h (${autonomiaDias} dias)</span>
-                </div>
-                <div class="previsao-item">
-                    <span class="previsao-label">Acaba em:</span>
-                    <span class="previsao-value">${formatarDataHora(dataFim)}</span>
-                </div>
-                <div class="previsao-item">
-                    <span class="previsao-label">Turno que acaba:</span>
-                    <span class="pn-turno">${escapeHtml(String(item.turnoPrevisto))}º Turno</span>
-                </div>
-            </div>
-
-            <div class="pn-status ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
-                ${destacarTexto(`${statusInfo.icones} ${statusInfo.label.toUpperCase()}`, termoBusca)}
-            </div>
-        </article>
-    `;
-}
-
-function renderizarTabela() {
-    cardsContainer.classList.add('modo-tabela');
-
-    const dadosTabela = dadosFiltrados.filter((item) => {
-        const status = classificarCriticidade(item).grupo;
-        return status !== 'sem-consumo' && status !== 'critico';
-    });
-
-    if (dadosTabela.length === 0) {
-        cardsContainer.innerHTML = '<div class="loading-cards">Nenhum item com consumo ativo para exibir na tabela.</div>';
-        return;
+@keyframes card-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
     }
-
-    ordenarDadosTabela(dadosTabela);
-
-    const setaCampo = (campo) => {
-        if (ordenacaoTabela.campo !== campo) {
-            return '';
-        }
-
-        return ordenacaoTabela.direcao === 'asc' ? ' ▲' : ' ▼';
-    };
-
-    const linhas = dadosTabela.map((item) => {
-        const statusInfo = classificarCriticidade(item);
-        const divergencia = obterDivergenciaEstoque(item);
-        const divergenciaClasse = obterClasseDivergencia(divergencia);
-        const termoBusca = filtros.busca;
-
-        return `
-            <tr class="linha-tabela" data-pn="${escapeHtml(item.pn)}">
-                <td>${destacarTexto(item.pn, termoBusca)}</td>
-                <td>${destacarTexto(item.modelo, termoBusca)}</td>
-                <td>${numeroSeguro(item.estoqueFisico)}</td>
-                <td><span class="divergencia-badge ${divergenciaClasse}">${formatarDivergenciaEstoque(divergencia)}</span></td>
-                <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
-                <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
-                <td>${formatarDataHora(new Date(item.dataFim))}</td>
-                <td>${escapeHtml(String(item.turnoPrevisto))}º</td>
-                <td><span class="status-cell pn-status ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">${destacarTexto(`${statusInfo.icones} ${statusInfo.label}`, termoBusca)}</span></td>
-            </tr>
-        `;
-    }).join('');
-
-    cardsContainer.innerHTML = `
-        <div class="tabela-wrapper">
-            <table class="tabela-lista">
-                <thead>
-                    <tr>
-                        <th data-sort="pn">PN${setaCampo('pn')}</th>
-                        <th data-sort="modelo">Modelo${setaCampo('modelo')}</th>
-                        <th data-sort="estoque">Estoque${setaCampo('estoque')}</th>
-                        <th data-sort="divergencia">Divergencia${setaCampo('divergencia')}</th>
-                        <th data-sort="consumo">Consumo/h${setaCampo('consumo')}</th>
-                        <th data-sort="autonomiaHoras">Autonomia${setaCampo('autonomiaHoras')}</th>
-                        <th data-sort="dataFim">Previsão${setaCampo('dataFim')}</th>
-                        <th data-sort="turnoPrevisto">Turno${setaCampo('turnoPrevisto')}</th>
-                        <th data-sort="status">Status${setaCampo('status')}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${linhas}
-                </tbody>
-            </table>
-        </div>
-    `;
-
-    cardsContainer.querySelectorAll('.linha-tabela').forEach((linha) => {
-        linha.addEventListener('click', () => abrirModal(linha.dataset.pn));
-    });
-
-    cardsContainer.querySelectorAll('th[data-sort]').forEach((th) => {
-        th.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const campo = th.dataset.sort;
-            if (ordenacaoTabela.campo === campo) {
-                ordenacaoTabela.direcao = ordenacaoTabela.direcao === 'asc' ? 'desc' : 'asc';
-            } else {
-                ordenacaoTabela.campo = campo;
-                ordenacaoTabela.direcao = 'asc';
-            }
-
-            renderizarTabela();
-        });
-    });
-}
-
-function ordenarDadosTabela(lista) {
-    const { campo, direcao } = ordenacaoTabela;
-
-    lista.sort((a, b) => {
-        let valorA;
-        let valorB;
-
-        if (campo === 'status') {
-            valorA = classificarCriticidade(a).label;
-            valorB = classificarCriticidade(b).label;
-        } else if (campo === 'urgencia') {
-            valorA = numeroSeguro(a.autonomiaHoras, Number.POSITIVE_INFINITY);
-            valorB = numeroSeguro(b.autonomiaHoras, Number.POSITIVE_INFINITY);
-        } else if (campo === 'dataFim') {
-            valorA = obterTimestampEsgotamento(a) ?? Number.POSITIVE_INFINITY;
-            valorB = obterTimestampEsgotamento(b) ?? Number.POSITIVE_INFINITY;
-        } else if (['estoque', 'divergencia', 'consumo', 'autonomiaHoras', 'turnoPrevisto'].includes(campo)) {
-            if (campo === 'estoque') {
-                valorA = numeroSeguro(a.estoqueFisico, Number.POSITIVE_INFINITY);
-                valorB = numeroSeguro(b.estoqueFisico, Number.POSITIVE_INFINITY);
-            } else if (campo === 'divergencia') {
-                valorA = numeroSeguro(obterDivergenciaEstoque(a), Number.POSITIVE_INFINITY);
-                valorB = numeroSeguro(obterDivergenciaEstoque(b), Number.POSITIVE_INFINITY);
-            } else {
-                valorA = numeroSeguro(a[campo], Number.POSITIVE_INFINITY);
-                valorB = numeroSeguro(b[campo], Number.POSITIVE_INFINITY);
-            }
-        } else {
-            valorA = normalizarTexto(a[campo]);
-            valorB = normalizarTexto(b[campo]);
-        }
-
-        if (typeof valorA === 'string' || typeof valorB === 'string') {
-            const comparacao = String(valorA).localeCompare(String(valorB), 'pt-BR');
-            return direcao === 'asc' ? comparacao : -comparacao;
-        }
-
-        const comparacao = valorA - valorB;
-        return direcao === 'asc' ? comparacao : -comparacao;
-    });
-}
-function abrirModal(pn) {
-    const item = dadosCompletos.find((dado) => String(dado.pn) === String(pn));
-    if (!item) {
-        return;
+    to {
+        opacity: 1;
+        transform: translateY(0);
     }
+}
 
-    destruirGraficosModal();
-    modalContent?.classList.remove('modal-consumo');
-    const dataFim = new Date(item.dataFim);
-    const autonomiaHoras = numeroSeguro(item.autonomiaHoras);
-    const autonomiaDias = (autonomiaHoras / 24).toFixed(1);
-    const statusInfo = classificarCriticidade(item);
-    modalTitulo.textContent = item.pn;
-
-    modalBody.innerHTML = `
-        <div class="modal-details">
-            <div class="modal-grid">
-                <div class="detail-box center">
-                    <div class="detail-caption">Modelo</div>
-                    <div class="detail-value">${escapeHtml(item.modelo)}</div>
-                </div>
-                <div class="detail-box center">
-                    <div class="detail-caption">Linha</div>
-                    <div class="detail-value">${escapeHtml(item.linha || '-')}</div>
-                </div>
-            </div>
-
-            <div class="detail-section">
-                <h4>Detalhes do estoque</h4>
-                <div class="detail-row">
-                    <span>Quantidade atual:</span>
-                    <strong>${numeroSeguro(item.estoqueFisico)} peças</strong>
-                </div>
-                <div class="detail-row">
-                    <span>Consumo por hora:</span>
-                    <strong>${numeroSeguro(item.consumo).toFixed(1)} peças/h</strong>
-                </div>
-                <div class="detail-row">
-                    <span>Autonomia:</span>
-                    <strong>${autonomiaHoras.toFixed(1)} horas (${autonomiaDias} dias)</strong>
-                </div>
-            </div>
-
-            <div class="detail-section">
-                <h4>Previsão de esgotamento</h4>
-                <div class="detail-row">
-                    <span>Data:</span>
-                    <strong>${formatarData(dataFim)}</strong>
-                </div>
-                <div class="detail-row">
-                    <span>Horário:</span>
-                    <strong>${formatarHora(dataFim)}</strong>
-                </div>
-                <div class="detail-row">
-                    <span>Turno:</span>
-                    <strong>${escapeHtml(String(item.turnoPrevisto))}º Turno</strong>
-                </div>
-            </div>
-
-            <div class="status-box ${statusInfo.grupo}" title="${escapeHtml(statusInfo.tooltip)}">
-                Status: ${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label.toUpperCase())}
-            </div>
-        </div>
-    `;
-
-    modalDetalhes.classList.add('mostrar');
-}
-
-function abrirModalGraficoConsumo() {
-    const itensDisponiveis = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
-    if (itensDisponiveis.length === 0) {
-        alert('Nenhum part number com estoque e consumo por hora disponível para gerar o gráfico.');
-        return;
-    }
+.pn-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--hover-shadow), 0 0 0 1px rgba(24, 148, 255, 0.35);
+    border-color: rgba(31, 143, 255, 0.58);
+}
 
-    destruirGraficosModal();
-    filtroModeloGraficoConsumo = filtros.modelo !== 'todos' ? filtros.modelo : 'todos';
-    limitePnGraficoConsumo = LIMITE_PADRAO_GRAFICO_CONSUMO;
-    pnSelecionadoGraficoConsumo = 'todos';
-    modalContent?.classList.add('modal-consumo');
-    modalTitulo.textContent = 'Gráfico de consumo por part number';
-    modalBody.innerHTML = criarConteudoModalGraficoConsumo();
-    modalDetalhes.classList.add('mostrar');
-    configurarFiltroModalGraficoConsumo();
-    renderizarGraficoConsumo();
-}
-
-function criarConteudoModalGraficoConsumo() {
-    const modelos = obterModelosGraficoConsumo();
-    const botoesModelo = [
-        `<button class="filtro-btn ${filtroModeloGraficoConsumo === 'todos' ? 'ativo' : ''}" data-modelo-grafico="todos">Todos</button>`,
-        ...modelos.map((modelo) => `
-            <button class="filtro-btn ${filtroModeloGraficoConsumo === modelo ? 'ativo' : ''}" data-modelo-grafico="${escapeHtml(modelo)}">
-                ${escapeHtml(modelo)}
-            </button>
-        `)
-    ].join('');
-
-    return `
-        <div class="modal-details consumo-modal">
-            <div class="detail-section">
-                <h4>Filtro em cascata por modelo</h4>
-                <div class="trend-chart-subtitle">Selecione o modelo para reorganizar o consumo por part number.</div>
-                <div class="filtro-buttons consumo-cascata-filtros" id="filtroModeloGraficoConsumo">${botoesModelo}</div>
-            </div>
-
-            <div class="detail-section" id="blocoLimiteGraficoConsumo">
-                <h4>Quantidade de PN no gráfico</h4>
-                <div class="trend-chart-subtitle">Defina quantos part numbers serão exibidos para manter boa performance.</div>
-                <div class="consumo-toolbar">
-                    <div class="filtro-buttons consumo-cascata-filtros" id="filtroLimiteGraficoConsumo">
-                        <button class="filtro-btn ${limitePnGraficoConsumo === '5' ? 'ativo' : ''}" data-limite-grafico="5">5</button>
-                        <button class="filtro-btn ${limitePnGraficoConsumo === '10' ? 'ativo' : ''}" data-limite-grafico="10">10</button>
-                        <button class="filtro-btn ${limitePnGraficoConsumo === '20' ? 'ativo' : ''}" data-limite-grafico="20">20</button>
-                        <button class="filtro-btn ${limitePnGraficoConsumo === 'todos' ? 'ativo' : ''}" data-limite-grafico="todos">Todos</button>
-                    </div>
-                    <div class="consumo-select-wrap">
-                        <label class="consumo-select-label" for="selectPnGraficoConsumo">PN</label>
-                        <select id="selectPnGraficoConsumo" class="auto-refresh-select consumo-select"></select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="trend-chart-wrap consumo-chart-wrap">
-                <h4>Curva de consumo por part number</h4>
-                <div class="trend-chart-subtitle" id="graficoConsumoResumo"></div>
-                <canvas id="graficoConsumoCanvas" aria-label="Gráfico de consumo por part number"></canvas>
-            </div>
-
-            <div class="detail-section">
-                <h4>Resumo do filtro</h4>
-                <div class="consumo-resumo-grid" id="graficoConsumoCards"></div>
-            </div>
-        </div>
-    `;
-}
-
-function configurarFiltroModalGraficoConsumo() {
-    const filtroEl = document.getElementById('filtroModeloGraficoConsumo');
-    const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
-    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
-    if (!filtroEl) {
-        return;
-    }
+.pn-card.critico-extremo { box-shadow: inset 6px 0 0 #ff274f, 0 24px 32px rgba(117, 27, 46, 0.24); }
+.pn-card.critico-alto { box-shadow: inset 6px 0 0 #ff516f, 0 22px 32px rgba(117, 27, 46, 0.22); }
+.pn-card.critico-moderado { box-shadow: inset 6px 0 0 #ff8a33, 0 20px 30px rgba(155, 80, 22, 0.2); }
+.pn-card.atencao-faixa { box-shadow: inset 6px 0 0 var(--warning-color), 0 20px 30px rgba(127, 94, 25, 0.2); }
+.pn-card.normal-faixa { box-shadow: inset 6px 0 0 var(--normal-color), 0 20px 30px rgba(22, 89, 61, 0.18); }
+.pn-card.sem-consumo-faixa { box-shadow: inset 6px 0 0 #94a3b8, 0 20px 30px rgba(93, 111, 140, 0.18); }
+.pn-card.esgotado-faixa { box-shadow: inset 6px 0 0 var(--empty-color), 0 20px 30px rgba(80, 96, 126, 0.2); }
 
-    filtroEl.addEventListener('click', (e) => {
-        const botao = e.target.closest('[data-modelo-grafico]');
-        if (!botao) {
-            return;
-        }
-
-        filtroModeloGraficoConsumo = botao.dataset.modeloGrafico;
-        pnSelecionadoGraficoConsumo = 'todos';
-        filtroEl.querySelectorAll('[data-modelo-grafico]').forEach((item) => {
-            item.classList.toggle('ativo', item.dataset.modeloGrafico === filtroModeloGraficoConsumo);
-        });
-        renderizarGraficoConsumo();
-    });
-
-    limiteEl?.addEventListener('click', (e) => {
-        const botao = e.target.closest('[data-limite-grafico]');
-        if (!botao) {
-            return;
-        }
-
-        limitePnGraficoConsumo = botao.dataset.limiteGrafico;
-        limiteEl.querySelectorAll('[data-limite-grafico]').forEach((item) => {
-            item.classList.toggle('ativo', item.dataset.limiteGrafico === limitePnGraficoConsumo);
-        });
-        renderizarGraficoConsumo();
-    });
-
-    selectPnEl?.addEventListener('change', (e) => {
-        pnSelecionadoGraficoConsumo = e.target.value || 'todos';
-        renderizarGraficoConsumo();
-    });
-}
-
-function obterModelosGraficoConsumo() {
-    return [...new Set(
-        dadosFiltrados
-            .filter((item) => itemPodeAparecerNoGraficoConsumo(item))
-            .map((item) => item.modelo)
-            .filter(Boolean)
-    )].sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
-}
-
-function obterDadosGraficoConsumo() {
-    const itensBase = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
-    const itensFiltrados = filtroModeloGraficoConsumo === 'todos'
-        ? itensBase
-        : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
-
-    let itensOrdenados = [...itensFiltrados].sort((a, b) => {
-        const diferencaConsumo = numeroSeguro(b.consumo, 0) - numeroSeguro(a.consumo, 0);
-        if (diferencaConsumo !== 0) {
-            return diferencaConsumo;
-        }
-
-        return String(a.pn).localeCompare(String(b.pn), 'pt-BR');
-    });
-
-    totalItensGraficoAntesLimite = itensOrdenados.length;
-    limiteSegurancaGraficoAplicado = false;
-
-    if (pnSelecionadoGraficoConsumo !== 'todos') {
-        itensOrdenados = itensOrdenados.filter((item) => String(item.pn) === String(pnSelecionadoGraficoConsumo));
-        totalItensGraficoAntesLimite = itensOrdenados.length;
-        return itensOrdenados;
-    }
+.pn-header {
+    min-width: 0;
+    flex: 1;
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
 
-    if (limitePnGraficoConsumo !== 'todos') {
-        return itensOrdenados.slice(0, Number(limitePnGraficoConsumo));
-    }
+.pn-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-hard);
+}
 
-    if (itensOrdenados.length > LIMITE_SEGURANCA_GRAFICO_CONSUMO) {
-        limiteSegurancaGraficoAplicado = true;
-        return itensOrdenados.slice(0, LIMITE_SEGURANCA_GRAFICO_CONSUMO);
-    }
+.pn-nome {
+    font: 700 1.02rem/1.2 var(--font-title);
+    color: var(--text);
+    word-break: break-word;
+}
 
-    return itensOrdenados;
+.pn-modelo {
+    flex-shrink: 0;
+    border-radius: 999px;
+    padding: 5px 11px;
+    font: 700 0.7rem/1 var(--font-body);
+    color: #fff;
+    background: linear-gradient(140deg, #4f87bd, #305d8f);
 }
 
-function obterPnDisponiveisGraficoConsumo() {
-    const itensBase = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
-    const itensModelo = filtroModeloGraficoConsumo === 'todos'
-        ? itensBase
-        : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
+.pn-info {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+}
 
-    return [...new Set(itensModelo.map((item) => String(item.pn)).filter(Boolean))]
-        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+.info-item {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.34);
+    padding: 10px;
+    text-align: center;
 }
 
-function renderizarGraficoConsumo() {
-    const canvas = document.getElementById('graficoConsumoCanvas');
-    const resumoEl = document.getElementById('graficoConsumoResumo');
-    const cardsResumoEl = document.getElementById('graficoConsumoCards');
+:root[data-theme='dark'] .info-item {
+    background: rgba(16, 29, 45, 0.5);
+}
 
-    if (!canvas || !resumoEl || !cardsResumoEl || typeof Chart === 'undefined') {
-        return;
-    }
+.info-label {
+    font-size: 0.73rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    font-weight: 700;
+}
 
-    const itens = obterDadosGraficoConsumo();
-    const modeloTexto = filtroModeloGraficoConsumo === 'todos'
-        ? 'todos os modelos'
-        : `modelo ${filtroModeloGraficoConsumo}`;
-    const blocoLimiteEl = document.getElementById('blocoLimiteGraficoConsumo');
-    const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
-    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
-    const pnDisponiveis = obterPnDisponiveisGraficoConsumo();
-
-    if (blocoLimiteEl) {
-        blocoLimiteEl.classList.remove('hidden');
-    }
+.info-value {
+    font: 700 1.15rem/1 var(--font-title);
+    color: var(--text);
+}
 
-    if (limiteEl) {
-        limiteEl.querySelectorAll('[data-limite-grafico]').forEach((item) => {
-            item.classList.toggle('ativo', item.dataset.limiteGrafico === limitePnGraficoConsumo);
-        });
-    }
+.info-value small {
+    font-size: 0.78rem;
+    font-family: var(--font-body);
+    font-weight: 600;
+    color: var(--text-muted);
+}
 
-    if (pnSelecionadoGraficoConsumo !== 'todos' && !pnDisponiveis.includes(pnSelecionadoGraficoConsumo)) {
-        pnSelecionadoGraficoConsumo = 'todos';
-    }
+.info-hint {
+    margin-top: 5px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 700;
+}
 
-    if (selectPnEl) {
-        const opcoesPn = [
-            '<option value="todos">Todos os PN</option>',
-            ...pnDisponiveis.map((pn) => `<option value="${escapeHtml(pn)}" ${pnSelecionadoGraficoConsumo === pn ? 'selected' : ''}>${escapeHtml(pn)}</option>`)
-        ];
-        selectPnEl.innerHTML = opcoesPn.join('');
-        selectPnEl.disabled = filtroModeloGraficoConsumo === 'todos' || pnDisponiveis.length === 0;
-        selectPnEl.value = pnSelecionadoGraficoConsumo;
-    }
+.divergencia-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 58px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 800;
+    line-height: 1;
+    border: 1px solid transparent;
+}
 
-    if (itens.length === 0) {
-        resumoEl.textContent = `Nenhum item disponível para ${modeloTexto}.`;
-        cardsResumoEl.innerHTML = '<div class="trend-stat">Sem dados para exibir.</div>';
-        if (graficoConsumoChart) {
-            removerHoverTooltipConsumo();
-            graficoConsumoChart.destroy();
-            graficoConsumoChart = null;
-            graficoConsumoFingerprint = '';
-        }
-        return;
-    }
+.divergencia-badge.baixa {
+    color: #065f46;
+    background: color-mix(in srgb, #10b981 20%, transparent);
+    border-color: color-mix(in srgb, #10b981 55%, transparent);
+}
 
-    const totalConsumo = itens.reduce((acc, item) => acc + numeroSeguro(item.consumo), 0);
-    const itemMaisCritico = [...itens].sort((a, b) => {
-        const dataA = obterTimestampSeguro(a.dataFim) ?? Number.POSITIVE_INFINITY;
-        const dataB = obterTimestampSeguro(b.dataFim) ?? Number.POSITIVE_INFINITY;
-        return dataA - dataB;
-    })[0];
-    const rootStyle = getComputedStyle(document.documentElement);
-    const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
-
-    const avisoSeguranca = limiteSegurancaGraficoAplicado
-        ? ` Exibição limitada automaticamente em ${LIMITE_SEGURANCA_GRAFICO_CONSUMO} PN para manter desempenho.`
-        : '';
-    resumoEl.textContent = `${itens.length} part number(s) exibidos para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, PN ${pnSelecionadoGraficoConsumo}` : ''}${limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.${avisoSeguranca}`;
-    cardsResumoEl.innerHTML = `
-        <div class="trend-stat">
-            <span class="trend-stat-label">Modelo selecionado</span>
-            <span class="trend-stat-value">${escapeHtml(filtroModeloGraficoConsumo === 'todos' ? 'Todos' : filtroModeloGraficoConsumo)}</span>
-        </div>
-        <div class="trend-stat">
-            <span class="trend-stat-label">Total de PN</span>
-            <span class="trend-stat-value">${itens.length}${totalItensGraficoAntesLimite > itens.length ? ` de ${totalItensGraficoAntesLimite}` : ''}</span>
-        </div>
-        <div class="trend-stat">
-            <span class="trend-stat-label">Consumo total</span>
-            <span class="trend-stat-value">${totalConsumo.toFixed(1)} p/h</span>
-        </div>
-        <div class="trend-stat">
-            <span class="trend-stat-label">Acaba primeiro</span>
-            <span class="trend-stat-value">${escapeHtml(String(itemMaisCritico.pn))} (${escapeHtml(formatarDataHora(new Date(itemMaisCritico.dataFim)))})</span>
-        </div>
-    `;
-
-    const { labels, datasets } = gerarDatasetsGraficoConsumo(itens);
-    const fingerprintGrafico = gerarFingerprintGrafico({
-        tipo: 'consumo',
-        textColor,
-        labels,
-        datasets: datasets.map((dataset) => ({
-            label: dataset.label,
-            data: dataset.data,
-            fimPrevisto: dataset.metaInfo?.fimPrevisto || ''
-        }))
-    });
-
-    if (
-        graficoConsumoChart
-        && graficoConsumoFingerprint === fingerprintGrafico
-        && graficoConsumoChart.canvas === canvas
-    ) {
-        configurarHoverTooltipConsumo();
-        return;
-    }
+.divergencia-badge.media {
+    color: #7c5b00;
+    background: color-mix(in srgb, #fbbf24 26%, transparent);
+    border-color: color-mix(in srgb, #f59e0b 58%, transparent);
+}
 
-    if (graficoConsumoChart) {
-        removerHoverTooltipConsumo();
-        graficoConsumoChart.destroy();
-        graficoConsumoChart = null;
-    }
+.divergencia-badge.alta {
+    color: #9f1239;
+    background: color-mix(in srgb, #f43f5e 20%, transparent);
+    border-color: color-mix(in srgb, #f43f5e 58%, transparent);
+}
 
- graficoConsumoChart = new Chart(canvas, {
-    type: 'bar',
-    data: {
-        labels,
-        datasets
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        indexAxis: 'y', // barras horizontais
-        animation: false,
-        resizeDelay: 120,
+.pn-previsao {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-soft);
+    background: rgba(255, 255, 255, 0.3);
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+:root[data-theme='dark'] .pn-previsao {
+    background: rgba(13, 27, 45, 0.48);
+}
+
+.previsao-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 0.8rem;
+    padding: 4px 0;
+}
+
+.previsao-label {
+    color: var(--text-muted);
+    font-weight: 600;
+}
 
-        plugins: {
-            legend: {
-                labels: {
-                    color: textColor,
-                    font: { size: 11, weight: 700 },
-                    boxWidth: 12
-                }
-            },
+.previsao-value {
+    color: var(--text);
+    font-weight: 700;
+}
 
-           tooltip: {
-    callbacks: {
+.pn-turno {
+    font-size: 0.72rem;
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: #fff;
+    background: linear-gradient(135deg, #3470af, #143c67);
+}
 
-        label: (context) => {
+.pn-status {
+    margin-top: 8px;
+    border-radius: 10px;
+    padding: 9px;
+    text-align: center;
+    font: 800 0.76rem/1 var(--font-body);
+    letter-spacing: 0.35px;
+}
 
-            const horas = context.parsed.x.toFixed(1);
-            return `Acaba em ${horas} horas`;
+.pn-status.critico {
+    background: color-mix(in srgb, var(--critical-color) 24%, transparent);
+    color: color-mix(in srgb, var(--critical-color) 75%, #000);
+}
 
-        },
+.pn-status.atencao {
+    background: color-mix(in srgb, var(--warning-color) 26%, transparent);
+    color: color-mix(in srgb, var(--warning-color) 78%, #1f1f1f);
+}
 
-        afterLabel: (context) => {
+.pn-status.normal {
+    background: color-mix(in srgb, var(--normal-color) 22%, transparent);
+    color: color-mix(in srgb, var(--normal-color) 80%, #052310);
+}
 
-            const fim = context.dataset.metaInfo[context.dataIndex];
+.pn-status.sem-consumo {
+    background: color-mix(in srgb, #94a3b8 24%, transparent);
+    color: color-mix(in srgb, #64748b 86%, #1f2937);
+}
 
-            return `Horário: ${fim}`;
+.pn-status.esgotado {
+    background: color-mix(in srgb, var(--empty-color) 28%, transparent);
+    color: color-mix(in srgb, var(--empty-color) 90%, #111);
+}
 
-        }
+.modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    justify-content: center;
+    align-items: center;
+    background: rgba(4, 12, 21, 0.52);
+    backdrop-filter: blur(4px);
+    padding: 20px;
+}
 
-    }
+.modal.mostrar {
+    display: flex;
 }
-        },
-
-        scales: {
-            x: {
-                beginAtZero: true,
-                ticks: {
-                    color: textColor
-                },
-                grid: {
-                    color: 'rgba(120, 140, 170, 0.1)'
-                },
-                title: {
-                    display: true,
-                    text: 'Horas até esgotar',
-                    color: textColor
-                }
-            },
-
-            y: {
-                ticks: {
-                    color: textColor
-                },
-                grid: {
-                    color: 'rgba(120, 140, 170, 0.18)'
-                },
-                title: {
-                    display: true,
-                    text: 'Part Number',
-                    color: textColor
-                }
-            }
-        }
-    },
-
-   plugins: [{
-    id: 'linhaFim',
-
-    afterDatasetsDraw(chart) {
-
-        const { ctx } = chart;
-        const meta = chart.getDatasetMeta(0);
-
-        meta.data.forEach((barra) => {
-
-            const x = barra.x;
-            const y = barra.y;
-
-            ctx.save();
-
-            ctx.beginPath();
-            ctx.moveTo(x, y - 10);
-            ctx.lineTo(x, y + 10);
-
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#111';
-            ctx.stroke();
-
-            ctx.restore();
-
-        });
 
-    }
-}]
-});
+.modal-content {
+    width: min(760px, 100%);
+    max-height: 92vh;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-soft);
+    background: var(--surface-strong);
+    backdrop-filter: var(--blur);
+    overflow: auto;
+    box-shadow: 0 34px 48px rgba(5, 10, 20, 0.38);
+    animation: modal-in 260ms ease;
+}
 
-graficoConsumoFingerprint = fingerprintGrafico;
-configurarHoverTooltipConsumo();
+.modal-content.modal-consumo {
+    width: min(1120px, 100%);
 }
 
-function configurarHoverTooltipConsumo() {
-    if (!graficoConsumoChart || !graficoConsumoChart.canvas) {
-        removerHoverTooltipConsumo();
-        return;
+@keyframes modal-in {
+    from {
+        opacity: 0;
+        transform: translateY(10px) scale(0.98);
     }
-
-    removerHoverTooltipConsumo();
-
-    const chart = graficoConsumoChart;
-    const canvas = chart.canvas;
-
-    const limparTooltipInterno = () => {
-        if (!ultimoHoverTooltipConsumo) {
-            return;
-        }
-        ultimoHoverTooltipConsumo = '';
-        chart.setActiveElements([]);
-        if (chart.tooltip) {
-            chart.tooltip.setActiveElements([], { x: 0, y: 0 });
-        }
-        chart.update('none');
-    };
-
-    const atualizarTooltip = (evento) => {
-        const pontoEvento = evento?.touches?.[0] || evento?.changedTouches?.[0] || evento;
-        if (!pontoEvento || typeof pontoEvento.clientX !== 'number' || typeof pontoEvento.clientY !== 'number') {
-            return;
-        }
-
-        const rect = canvas.getBoundingClientRect();
-        if (!rect.width || !rect.height) {
-            return;
-        }
-
-        const x = (pontoEvento.clientX - rect.left) * (chart.width / rect.width);
-        const y = (pontoEvento.clientY - rect.top) * (chart.height / rect.height);
-
-        let melhor = null;
-        let menorDistancia = Number.POSITIVE_INFINITY;
-
-        chart.data.datasets.forEach((dataset, datasetIndex) => {
-            const meta = chart.getDatasetMeta(datasetIndex);
-            if (!meta || meta.hidden) {
-                return;
-            }
-
-            meta.data.forEach((ponto, index) => {
-                const pos = ponto.getProps(['x', 'y', 'skip'], true);
-                if (pos.skip || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
-                    return;
-                }
-
-                const distancia = Math.hypot(pos.x - x, pos.y - y);
-                if (distancia < menorDistancia) {
-                    menorDistancia = distancia;
-                    melhor = { datasetIndex, index, x: pos.x, y: pos.y, dataset };
-                }
-            });
-        });
-
-        if (!melhor) {
-            limparTooltipInterno();
-            return;
-        }
-
-        const raio = numeroSeguro(melhor.dataset?.pointRadius, 3);
-        const distanciaMaxima = Math.max(4, raio + 1);
-        if (menorDistancia > distanciaMaxima) {
-            limparTooltipInterno();
-            return;
-        }
-
-        const ativos = [{ datasetIndex: melhor.datasetIndex, index: melhor.index }];
-        const chaveHover = `${melhor.datasetIndex}:${melhor.index}`;
-        if (ultimoHoverTooltipConsumo === chaveHover) {
-            return;
-        }
-        ultimoHoverTooltipConsumo = chaveHover;
-        chart.setActiveElements(ativos);
-        if (chart.tooltip) {
-            chart.tooltip.setActiveElements(ativos, { x: melhor.x, y: melhor.y });
-        }
-        chart.update('none');
-    };
-
-    handlerHoverGraficoConsumo = {
-        atualizarTooltip,
-        limparTooltip: limparTooltipInterno
-    };
-
-    canvas.addEventListener('mousemove', atualizarTooltip, { passive: true });
-    canvas.addEventListener('touchmove', atualizarTooltip, { passive: true });
-    canvas.addEventListener('mouseleave', limparTooltip, { passive: true });
-    canvas.addEventListener('touchend', limparTooltip, { passive: true });
-}
-
-function removerHoverTooltipConsumo() {
-    if (!handlerHoverGraficoConsumo || !graficoConsumoChart?.canvas) {
-        ultimoHoverTooltipConsumo = '';
-        handlerHoverGraficoConsumo = null;
-        return;
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
     }
-
-    const canvas = graficoConsumoChart.canvas;
-    canvas.removeEventListener('mousemove', handlerHoverGraficoConsumo.atualizarTooltip);
-    canvas.removeEventListener('touchmove', handlerHoverGraficoConsumo.atualizarTooltip);
-    canvas.removeEventListener('mouseleave', handlerHoverGraficoConsumo.limparTooltip);
-    canvas.removeEventListener('touchend', handlerHoverGraficoConsumo.limparTooltip);
-    ultimoHoverTooltipConsumo = '';
-    handlerHoverGraficoConsumo = null;
 }
 
-function gerarDatasetsGraficoConsumo(itens) {
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border-hard);
+    background: linear-gradient(130deg, rgba(10, 27, 46, 0.95), rgba(20, 47, 76, 0.85));
+    color: #fff;
+}
 
-    const agora = new Date();
+.modal-header h3 {
+    font-family: var(--font-title);
+    font-size: 1.2rem;
+}
 
-    const itensOrdenados = [...itens].sort((a, b) =>
-        new Date(a.dataFim) - new Date(b.dataFim)
-    );
+.modal-close {
+    border: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    cursor: pointer;
+    font-size: 1.4rem;
+    line-height: 1;
+}
 
-    const labels = itensOrdenados.map(item => item.pn);
+.modal-close:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
 
-    const valores = itensOrdenados.map(item => {
+.modal-body {
+    padding: 20px;
+}
 
-        const fim = new Date(item.dataFim);
+.modal-details {
+    display: grid;
+    gap: 14px;
+}
 
-        const horas = (fim - agora) / 3600000;
+.modal-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
 
-        return Math.max(0, Number(horas.toFixed(2)));
+.detail-box {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-soft);
+    background: rgba(255, 255, 255, 0.34);
+    padding: 14px;
+}
 
-    });
+:root[data-theme='dark'] .detail-box {
+    background: rgba(17, 31, 50, 0.58);
+}
 
-    const horarios = itensOrdenados.map(item =>
-        formatarDataHora(new Date(item.dataFim))
-    );
+.detail-box.center {
+    text-align: center;
+}
 
-    const cores = itensOrdenados.map(item => {
+.detail-caption {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 700;
+}
 
-        const status = classificarCriticidade(item).grupo;
+.detail-value {
+    font: 700 1.05rem/1.25 var(--font-title);
+    color: var(--text);
+}
 
-        if (status === 'critico') return '#e20d2a';
-        if (status === 'atencao') return '#f5bb2e';
-        return '#29c177';
+.detail-section {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-soft);
+    background: rgba(255, 255, 255, 0.3);
+    padding: 14px;
+}
 
-    });
+:root[data-theme='dark'] .detail-section {
+    background: rgba(12, 26, 44, 0.54);
+}
 
-    const datasets = [{
-        label: 'Horas até acabar',
-        data: valores,
-        backgroundColor: cores,
-        borderRadius: 6,
-        barThickness: 18,
-        metaInfo: horarios
-    }];
+.detail-section h4 {
+    font-size: 0.92rem;
+    margin-bottom: 12px;
+    color: var(--text);
+}
 
-    return { labels, datasets };
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 0.88rem;
+    border-bottom: 1px dashed var(--border-hard);
 }
 
-function fecharModal() {
-    modalDetalhes.classList.remove('mostrar');
-    modalContent?.classList.remove('modal-consumo');
-    destruirGraficosModal();
-    modalBody.innerHTML = '';
+.detail-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
 }
 
-function destruirGraficosModal() {
-    if (graficoConsumoChart) {
-        removerHoverTooltipConsumo();
-        graficoConsumoChart.destroy();
-        graficoConsumoChart = null;
-    }
-    graficoConsumoFingerprint = '';
-}
-
-function classificarCriticidade(item) {
-    const estoque = numeroSeguro(item.estoqueFisico, 0);
-    const consumo = numeroSeguro(item.consumo, 0);
-    const autonomia = numeroSeguro(item.autonomiaHoras, 0);
-
-    // estoque zerado sempre crítico
-    if (estoque <= 0) {
-        return {
-            grupo: 'critico',
-            classeFaixa: 'critico-extremo',
-            label: 'Crítico (sem estoque)',
-            icones: '🔴 ❌',
-            tooltip: 'Item sem estoque disponível'
-        };
-    }
+.detail-row span {
+    color: var(--text-muted);
+}
 
-    // sem consumo
-    if (estoque > 0 && consumo <= 0) {
-        return {
-            grupo: 'sem-consumo',
-            classeFaixa: 'sem-consumo-faixa',
-            label: 'Sem consumo',
-            icones: '⚪ ⏸',
-            tooltip: 'Item com estoque mas sem consumo registrado'
-        };
-    }
+.detail-row strong {
+    color: var(--text);
+    text-align: right;
+}
 
-    // crítico até 5h
-    if (autonomia <= 5) {
-        return {
-            grupo: 'critico',
-            classeFaixa: 'critico-extremo',
-            label: 'Crítico ≤5h',
-            icones: '🔴 ⚠️',
-            tooltip: 'Autonomia menor ou igual a 5 horas'
-        };
-    }
+.status-box {
+    border-radius: var(--radius-sm);
+    text-align: center;
+    padding: 12px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+}
 
-    // atenção 5 a 6h
-    if (autonomia > 5 && autonomia <= 6) {
-        return {
-            grupo: 'atencao',
-            classeFaixa: 'atencao-faixa',
-            label: 'Atenção 5-6h',
-            icones: '🟡 ⏳',
-            tooltip: 'Autonomia entre 5 e 6 horas'
-        };
-    }
+.status-box.critico {
+    background: color-mix(in srgb, var(--critical-color) 24%, transparent);
+    color: color-mix(in srgb, var(--critical-color) 82%, #000);
+}
 
-    // ok acima de 7h
-    return {
-        grupo: 'normal',
-        classeFaixa: 'normal-faixa',
-        label: 'OK ≥7h',
-        icones: '🟢 ✅',
-        tooltip: 'Autonomia maior ou igual a 7 horas'
-    };
-}
-
-function gerarSerieEstoqueReal(item, opcoes = {}) {
-    const agora = opcoes.inicio ? new Date(opcoes.inicio) : new Date();
-    const dataFim = new Date(item.dataFim);
-    const estoqueInicial = numeroSeguro(item.estoqueFisico, 0);
-    const consumoHora = numeroSeguro(item.consumo, 0);
-    const labels = [];
-    const valores = [];
-    const timestampAgora = agora.getTime();
-    const timestampFimItem = Number.isNaN(dataFim.getTime())
-        ? timestampAgora + (numeroSeguro(item.autonomiaHoras, 24) * 3600000)
-        : dataFim.getTime();
-    const timestampFimGrafico = opcoes.fim
-        ? new Date(opcoes.fim).getTime()
-        : timestampFimItem;
-    const duracaoHoras = Math.max(0.1, (timestampFimGrafico - timestampAgora) / 3600000);
-    const numPontos = opcoes.numPontos || NUM_PONTOS_GRAFICO;
-    const passoHoras = duracaoHoras / (numPontos - 1);
-    const horasAteFimItem = Math.max(0, (timestampFimItem - timestampAgora) / 3600000);
-
-    for (let i = 0; i < numPontos; i += 1) {
-        const horasPassadas = i * passoHoras;
-        const dataHora = new Date(timestampAgora + horasPassadas * 60 * 60 * 1000);
-        const label = duracaoHoras <= 48
-            ? `${String(dataHora.getHours()).padStart(2, '0')}:00`
-            : `${String(dataHora.getDate()).padStart(2, '0')}/${String(dataHora.getMonth() + 1).padStart(2, '0')} ${String(dataHora.getHours()).padStart(2, '0')}:00`;
-        const horasConsideradas = Math.min(horasPassadas, horasAteFimItem);
-        const valor = Math.max(0, estoqueInicial - (consumoHora * horasConsideradas));
-
-        labels.push(label);
-        valores.push(Number(valor.toFixed(2)));
-    }
+.status-box.atencao {
+    background: color-mix(in srgb, var(--warning-color) 24%, transparent);
+    color: color-mix(in srgb, var(--warning-color) 88%, #1f1f1f);
+}
 
-    return {
-        labels,
-        valores,
-        estoqueInicial,
-        consumoHora,
-        fimPrevisto: formatarDataHora(new Date(timestampFimItem))
-    };
-}
-function exportarPDF() {
-    if (dadosFiltrados.length === 0) {
-        alert('Nenhum dado filtrado para exportar.');
-        return;
-    }
+.status-box.normal {
+    background: color-mix(in srgb, var(--normal-color) 24%, transparent);
+    color: color-mix(in srgb, var(--normal-color) 82%, #052310);
+}
 
-    const popup = window.open('', '_blank');
-    if (!popup) {
-        alert('Não foi possível abrir a janela de impressão. Verifique bloqueio de pop-up.');
-        return;
-    }
+.status-box.sem-consumo {
+    background: color-mix(in srgb, #94a3b8 24%, transparent);
+    color: color-mix(in srgb, #64748b 86%, #1f2937);
+}
 
-    const linhasHtml = dadosFiltrados.map((item) => {
-        const statusInfo = classificarCriticidade(item);
-        return `
-            <tr>
-                <td>${escapeHtml(item.pn)}</td>
-                <td>${escapeHtml(item.modelo)}</td>
-                <td>${numeroSeguro(item.estoqueFisico)}</td>
-                <td>${numeroSeguro(item.consumo).toFixed(1)}</td>
-                <td>${numeroSeguro(item.autonomiaHoras).toFixed(1)}h</td>
-                <td>${escapeHtml(formatarDataHora(new Date(item.dataFim)))}</td>
-                <td>${escapeHtml(String(item.turnoPrevisto))}º</td>
-                <td>${escapeHtml(statusInfo.icones)} ${escapeHtml(statusInfo.label)}</td>
-            </tr>
-        `;
-    }).join('');
-
-    popup.document.write(`
-        <html>
-        <head>
-            <title>Relatório - ${gerarNomeArquivo('previsao')}</title>
-            <style>
-                body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
-                h1 { margin: 0 0 8px; font-size: 20px; }
-                .meta { margin-bottom: 16px; color: #444; font-size: 12px; }
-                table { border-collapse: collapse; width: 100%; font-size: 12px; }
-                th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-                th { background: #f0f0f0; }
-            </style>
-        </head>
-        <body>
-            <h1>Dashboard de Previsão - Relatório</h1>
-            <div class="meta">Gerado em ${formatarDataHora(new Date())} | ${dadosFiltrados.length} itens</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>PN</th>
-                        <th>Modelo</th>
-                        <th>Estoque</th>
-                        <th>Consumo/h</th>
-                        <th>Autonomia</th>
-                        <th>Previsão</th>
-                        <th>Turno</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>${linhasHtml}</tbody>
-            </table>
-        </body>
-        </html>
-    `);
-
-    popup.document.close();
-    popup.focus();
-    popup.print();
-}
-
-function atualizarTextoModoVisao() {
-    btnModoVisao.textContent = modoVisualizacao === 'cards' ? 'Visão: Cards' : 'Visão: Tabela';
-}
-
-function limparFiltros() {
-    if (buscaDebounceTimer) {
-        clearTimeout(buscaDebounceTimer);
-        buscaDebounceTimer = null;
-    }
+.status-box.esgotado {
+    background: color-mix(in srgb, var(--empty-color) 24%, transparent);
+    color: color-mix(in srgb, var(--empty-color) 90%, #1f1f1f);
+}
 
-    filtros = {
-        modelo: 'todos',
-        turno: 'todos',
-        status: 'todos',
-        ordem: 'urgencia',
-        limiteCards: 'todos',
-        busca: ''
-    };
-
-    buscaInput.value = '';
-
-    [
-        [filtroModeloEl, 'modelo', 'todos'],
-        [filtroTurnoEl, 'turno', 'todos'],
-        [filtroStatusEl, 'status', 'todos'],
-        [filtroOrdemEl, 'ordem', 'urgencia'],
-        [filtroLimiteCardsEl, 'limiteCards', 'todos']
-    ].forEach(([container, dataAttr, valor]) => {
-        container?.querySelectorAll('.filtro-btn').forEach((btn) => {
-            btn.classList.toggle('ativo', btn.dataset[dataAttr] === valor);
-        });
-    });
-
-    aplicarFiltros();
-}
-
-function configurarAutoRefresh() {
-    if (autoRefreshTimer) {
-        clearInterval(autoRefreshTimer);
-        autoRefreshTimer = null;
-    }
+.trend-chart-wrap {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-soft);
+    background: rgba(255, 255, 255, 0.3);
+    padding: 12px;
+}
 
-    if (autoRefreshIntervalSeconds <= 0 || autoRefreshPausado) {
-        autoRefreshStartedAt = null;
-        iniciarProgressBarAutoRefresh();
-        return;
-    }
+:root[data-theme='dark'] .trend-chart-wrap {
+    background: rgba(12, 26, 44, 0.54);
+}
 
-    autoRefreshStartedAt = Date.now();
-    autoRefreshTimer = setInterval(() => {
-        autoRefreshStartedAt = Date.now();
-        carregarDados({ silencioso: true });
-    }, autoRefreshIntervalSeconds * 1000);
+.trend-chart-wrap h4 {
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+    color: var(--text);
+}
 
-    iniciarProgressBarAutoRefresh();
+.trend-chart-subtitle {
+    margin-bottom: 10px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
 }
 
-function alternarPausaAutoRefresh() {
-    if (autoRefreshIntervalSeconds <= 0) {
-        return;
-    }
+.trend-chart-wrap canvas {
+    width: 100% !important;
+    height: 220px !important;
+}
 
-    autoRefreshPausado = !autoRefreshPausado;
-    atualizarBotaoAutoRefresh();
-    configurarAutoRefresh();
-}
-
-function atualizarBotaoAutoRefresh() {
-    if (autoRefreshIntervalSeconds <= 0) {
-        btnPausarAutoRefresh.textContent = 'Auto desligada';
-        btnPausarAutoRefresh.disabled = true;
-        autoRefreshStatus.textContent = 'Auto atualização desligada';
-        autoRefreshCountdown.textContent = '--';
-        autoRefreshProgressBar.style.width = '0%';
-        autoRefreshProgressBar.classList.add('desligado');
-        autoRefreshProgressBar.classList.remove('pausado');
-        return;
-    }
+.consumo-modal {
+    gap: 16px;
+}
 
-    btnPausarAutoRefresh.disabled = false;
-    btnPausarAutoRefresh.textContent = autoRefreshPausado ? 'Retomar auto' : 'Pausar auto';
-    autoRefreshStatus.textContent = autoRefreshPausado
-        ? `Auto atualização pausada (${formatarIntervaloAutoRefresh(autoRefreshIntervalSeconds)})`
-        : `Auto atualização a cada ${formatarIntervaloAutoRefresh(autoRefreshIntervalSeconds)}`;
-    autoRefreshProgressBar.classList.toggle('pausado', autoRefreshPausado);
-    autoRefreshProgressBar.classList.remove('desligado');
-}
-
-function iniciarProgressBarAutoRefresh() {
-    if (autoRefreshProgressTimer) {
-        clearInterval(autoRefreshProgressTimer);
-        autoRefreshProgressTimer = null;
-    }
+.consumo-cascata-filtros {
+    margin-top: 12px;
+}
 
-    atualizarProgressoAutoRefresh();
+.consumo-toolbar {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
 
-    if (autoRefreshIntervalSeconds <= 0 || autoRefreshPausado) {
-        return;
-    }
+.consumo-select-wrap {
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
 
-    autoRefreshProgressTimer = setInterval(atualizarProgressoAutoRefresh, 1000);
+.consumo-select-label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-muted);
 }
 
-function atualizarProgressoAutoRefresh() {
-    if (autoRefreshIntervalSeconds <= 0) {
-        autoRefreshCountdown.textContent = '--';
-        autoRefreshProgressBar.style.width = '0%';
-        return;
-    }
+.consumo-select {
+    min-width: 220px;
+}
 
-    if (autoRefreshPausado || !autoRefreshStartedAt) {
-        autoRefreshCountdown.textContent = 'Pausado';
-        return;
-    }
+.consumo-chart-wrap canvas {
+    height: 420px !important;
+    position: relative;
+    z-index: 1;
+}
 
-    const totalMs = autoRefreshIntervalSeconds * 1000;
-    const elapsedMs = Date.now() - autoRefreshStartedAt;
-    const restanteMs = Math.max(0, totalMs - elapsedMs);
-    const progresso = Math.min(100, (elapsedMs / totalMs) * 100);
+.consumo-chart-wrap {
+    position: relative;
+}
 
-    autoRefreshCountdown.textContent = `Próxima em ${formatarTempoRestante(restanteMs)}`;
-    autoRefreshProgressBar.style.width = `${progresso}%`;
+.consumo-resumo-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
 }
 
-function formatarTempoRestante(restanteMs) {
-    const totalSegundos = Math.ceil(restanteMs / 1000);
-    const minutos = Math.floor(totalSegundos / 60);
-    const segundos = totalSegundos % 60;
-    return minutos > 0
-        ? `${minutos}:${String(segundos).padStart(2, '0')}`
-        : `${segundos}s`;
+.trend-stat {
+    border-radius: 10px;
+    border: 1px solid var(--border-soft);
+    background: rgba(255, 255, 255, 0.32);
+    padding: 8px;
+    text-align: center;
 }
 
-function formatarIntervaloAutoRefresh(segundos) {
-    if (segundos % 60 === 0) {
-        return `${segundos / 60} min`;
-    }
+:root[data-theme='dark'] .trend-stat {
+    background: rgba(16, 29, 45, 0.52);
+}
 
-    return `${segundos}s`;
-}
-
-function gerarNomeArquivo(prefixo) {
-    const agora = new Date();
-    const yyyy = agora.getFullYear();
-    const mm = String(agora.getMonth() + 1).padStart(2, '0');
-    const dd = String(agora.getDate()).padStart(2, '0');
-    const hh = String(agora.getHours()).padStart(2, '0');
-    const mi = String(agora.getMinutes()).padStart(2, '0');
-    return `${prefixo}_${yyyy}${mm}${dd}_${hh}${mi}`;
-}
-
-function numeroSeguro(valor, fallback = 0) {
-    const numero = Number(valor);
-    return Number.isFinite(numero) ? numero : fallback;
-}
-
-function normalizarItemEstoque(item) {
-    const estoqueFisico = Number(item?.estoqueFisico);
-    const estoqueAntigo = Number(item?.estoque);
-    const estoquePrincipal = Number.isFinite(estoqueFisico)
-        ? estoqueFisico
-        : (Number.isFinite(estoqueAntigo) ? estoqueAntigo : 0);
-    const estoqueSistemaRaw = Number(item?.estoqueSistema);
-    const estoqueSistema = Number.isFinite(estoqueSistemaRaw) ? estoqueSistemaRaw : null;
-    const divergenciaRaw = Number(item?.divergencia);
-    let divergencia = null;
-    if (estoqueSistema !== null) {
-        divergencia = estoqueSistema === 0
-            ? estoquePrincipal
-            : (estoquePrincipal - estoqueSistema);
-    } else if (Number.isFinite(divergenciaRaw)) {
-        divergencia = divergenciaRaw;
-    }
+.trend-stat-label {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-bottom: 4px;
+}
 
-    return {
-        ...item,
-        estoqueFisico: estoquePrincipal,
-        estoqueSistema,
-        divergencia
-    };
-}
-
-function obterDivergenciaEstoque(item) {
-    const estoqueFisico = Number(item?.estoqueFisico);
-    const estoqueSistema = Number(item?.estoqueSistema);
-    if (Number.isFinite(estoqueFisico) && Number.isFinite(estoqueSistema)) {
-        return estoqueSistema === 0
-            ? estoqueFisico
-            : (estoqueFisico - estoqueSistema);
-    }
+.trend-stat-value {
+    display: block;
+    color: var(--text);
+    font-size: 0.95rem;
+    font-weight: 800;
+}
 
-    const divergencia = Number(item?.divergencia);
-    if (Number.isFinite(divergencia)) {
-        return divergencia;
-    }
+.hidden {
+    display: none !important;
+}
 
-    return null;
+:root[data-economico='true'] .bg-orb {
+    display: none;
 }
 
-function obterClasseDivergencia(valor) {
-    if (!Number.isFinite(valor)) {
-        return 'baixa';
-    }
+:root[data-economico='true'] .container,
+:root[data-economico='true'] .filtro-group,
+:root[data-economico='true'] .filtros-acoes,
+:root[data-economico='true'] .kpi-card,
+:root[data-economico='true'] .pn-card,
+:root[data-economico='true'] .tabela-wrapper,
+:root[data-economico='true'] .modal-content,
+:root[data-economico='true'] .detail-box,
+:root[data-economico='true'] .detail-section,
+:root[data-economico='true'] .trend-chart-wrap,
+:root[data-economico='true'] .info-item,
+:root[data-economico='true'] .pn-previsao {
+    backdrop-filter: none;
+    box-shadow: none;
+}
 
-    const magnitude = Math.abs(valor);
-    if (magnitude <= 2) {
-        return 'baixa';
-    }
-    if (magnitude <= 10) {
-        return 'media';
-    }
-    return 'alta';
+:root[data-economico='true'] *,
+:root[data-economico='true'] *::before,
+:root[data-economico='true'] *::after {
+    animation: none !important;
+    transition: none !important;
 }
 
-function formatarDivergenciaEstoque(valor) {
-    if (!Number.isFinite(valor)) {
-        return 'N/D';
-    }
+:root[data-performance='low'] .bg-orb {
+    display: none;
+}
 
-    const inteiro = Number.isInteger(valor);
-    const numeroFormatado = inteiro ? String(valor) : valor.toFixed(1);
-    return valor > 0 ? `+${numeroFormatado}` : numeroFormatado;
+:root[data-performance='low'] .container,
+:root[data-performance='low'] .filtro-group,
+:root[data-performance='low'] .filtros-acoes,
+:root[data-performance='low'] .kpi-card,
+:root[data-performance='low'] .pn-card,
+:root[data-performance='low'] .tabela-wrapper,
+:root[data-performance='low'] .modal-content,
+:root[data-performance='low'] .detail-box,
+:root[data-performance='low'] .detail-section,
+:root[data-performance='low'] .trend-chart-wrap,
+:root[data-performance='low'] .info-item,
+:root[data-performance='low'] .pn-previsao {
+    backdrop-filter: none !important;
 }
 
-function gerarFingerprintDados(lista) {
-    if (!Array.isArray(lista) || lista.length === 0) {
-        return 'dados:0';
-    }
+:root[data-performance='low'] .pn-card::after {
+    display: none;
+}
 
-    const assinatura = lista
-        .map((item) => gerarAssinaturaItem(item))
-        .sort((a, b) => a.localeCompare(b))
-        .join('||');
-
-    return `dados:${lista.length}:${hashStringFNV1a(assinatura)}`;
-}
-
-function gerarAssinaturaItem(item) {
-    const timestampFim = obterTimestampSeguro(item?.dataFim);
-    const estoqueSistema = Number(item?.estoqueSistema);
-    const divergencia = obterDivergenciaEstoque(item);
-
-    return [
-        String(item?.pn ?? ''),
-        String(item?.modelo ?? ''),
-        String(item?.linha ?? ''),
-        numeroSeguro(item?.estoqueFisico, 0).toFixed(4),
-        Number.isFinite(estoqueSistema) ? estoqueSistema.toFixed(4) : '',
-        Number.isFinite(divergencia) ? divergencia.toFixed(4) : '',
-        numeroSeguro(item?.consumo, 0).toFixed(4),
-        numeroSeguro(item?.autonomiaHoras, 0).toFixed(4),
-        timestampFim === null ? '' : String(timestampFim),
-        String(item?.turnoPrevisto ?? '')
-    ].join('|');
-}
-
-function gerarFingerprintListaModelos(modelos) {
-    if (!Array.isArray(modelos) || modelos.length === 0) {
-        return 'modelos:0';
-    }
+:root[data-performance='low'] .pn-card,
+:root[data-performance='low'] .kpi-card,
+:root[data-performance='low'] .btn-atualizar,
+:root[data-performance='low'] .btn-acao,
+:root[data-performance='low'] .btn-tema,
+:root[data-performance='low'] .filtro-btn {
+    box-shadow: none !important;
+    transition: none !important;
+    animation: none !important;
+}
 
-    return `modelos:${modelos.length}:${hashStringFNV1a(modelos.map((item) => String(item)).join('|'))}`;
+:root[data-performance='low'] .pn-card:hover,
+:root[data-performance='low'] .kpi-card:hover,
+:root[data-performance='low'] .btn-atualizar:hover:not(:disabled),
+:root[data-performance='low'] .btn-acao:hover:not(:disabled),
+:root[data-performance='low'] .filtro-btn:hover {
+    transform: none !important;
+    filter: none !important;
 }
 
-function gerarFingerprintGrafico(payload) {
-    return `grafico:${hashStringFNV1a(JSON.stringify(payload))}`;
+.loading {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.45);
+    border-top-color: #fff;
+    display: inline-block;
+    animation: spin 1s linear infinite;
 }
 
-function hashStringFNV1a(texto) {
-    let hash = 2166136261;
-    for (let i = 0; i < texto.length; i += 1) {
-        hash ^= texto.charCodeAt(i);
-        hash = Math.imul(hash, 16777619);
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
     }
-    return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function normalizarTexto(valor) {
-    return String(valor || '')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase();
+@media (max-width: 1280px) {
+    .filtro-busca-group {
+        grid-column: span 2;
+    }
 }
 
-function destaqueSeguro(texto) {
-    return escapeHtml(String(texto ?? ''));
-}
+@media (max-width: 1150px) {
+    .filtros-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
-function destacarTexto(texto, termo) {
-    const textoSeguro = destaqueSeguro(texto);
-    if (!termo) {
-        return textoSeguro;
+    .filtros-acoes {
+        flex-direction: column;
+        align-items: stretch;
     }
 
-    const termoLimpo = escapeRegExp(String(termo));
-    if (!termoLimpo) {
-        return textoSeguro;
+    .acoes-principais,
+    .acoes-auto-refresh {
+        width: 100%;
     }
 
-    const regex = new RegExp(`(${termoLimpo})`, 'ig');
-    return textoSeguro.replace(regex, '<mark>$1</mark>');
+    .kpi-container {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
-function escapeRegExp(texto) {
-    return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+@media (max-width: 920px) {
+    body {
+        padding: 14px;
+    }
 
-function escapeHtml(valor) {
-    return String(valor ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+    .header {
+        padding: 20px;
+    }
 
-function criarIdSeguro(valor) {
-    return String(valor || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '');
-}
+    .filtros-grid {
+        grid-template-columns: 1fr;
+    }
 
-function obterTimestampSeguro(valorData) {
-    const timestamp = new Date(valorData).getTime();
-    return Number.isFinite(timestamp) ? timestamp : null;
-}
+    .cards-grid {
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        padding: 2px 18px 20px;
+    }
 
-function obterTimestampEsgotamento(item) {
-    const timestampDataFim = obterTimestampSeguro(item?.dataFim);
-    if (timestampDataFim !== null) {
-        return timestampDataFim;
+    .filtros-container {
+        padding: 18px;
     }
 
-    const autonomiaHoras = numeroSeguro(item?.autonomiaHoras, Number.POSITIVE_INFINITY);
-    if (!Number.isFinite(autonomiaHoras)) {
-        return null;
+    .kpi-container {
+        padding: 18px 18px 8px;
     }
 
-    return Date.now() + (autonomiaHoras * 3600000);
-}
+    .modal-grid,
+    .consumo-resumo-grid {
+        grid-template-columns: 1fr;
+    }
 
-function itemPodeSerExibido(item) {
-    const estoque = numeroSeguro(item?.estoqueFisico, 0);
-    const consumo = numeroSeguro(item?.consumo, 0);
-    return !(estoque <= 0 && consumo <= 0);
-}
+    .consumo-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .consumo-select-wrap,
+    .consumo-select {
+        width: 100%;
+        min-width: 0;
+    }
 
-function itemPodeAparecerNoGraficoConsumo(item) {
-    const estoque = numeroSeguro(item?.estoqueFisico, 0);
-    const consumo = numeroSeguro(item?.consumo, 0);
-    return estoque > 0 && consumo > 0;
+    .consumo-chart-wrap canvas {
+        height: 320px !important;
+    }
 }
 
-function formatarDataHora(data) {
-    if (!(data instanceof Date) || Number.isNaN(data.getTime())) {
-        return '-';
+@media (max-width: 620px) {
+    .header {
+        flex-direction: column;
+        align-items: flex-start;
     }
 
-    return data.toLocaleString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-}
-
-function formatarData(data) {
-    if (!(data instanceof Date) || Number.isNaN(data.getTime())) {
-        return '-';
+    .header-actions {
+        width: 100%;
+        justify-content: space-between;
     }
 
-    return data.toLocaleDateString('pt-BR');
-}
+    .btn-tema,
+    .ultima-atualizacao,
+    .btn-atualizar,
+    .btn-acao {
+        width: 100%;
+        justify-content: center;
+    }
 
-function formatarHora(data) {
-    if (!(data instanceof Date) || Number.isNaN(data.getTime())) {
-        return '-';
+    .acoes-principais,
+    .acoes-auto-refresh {
+        flex-direction: column;
+        align-items: stretch;
     }
 
-    return data.toLocaleTimeString('pt-BR', {
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-}
-
-function mostrarLoading(ativo, limparCards = true) {
-    if (ativo) {
-        btnAtualizar.disabled = true;
-        btnAtualizar.innerHTML = '<span class="loading"></span> Atualizando...';
-        if (limparCards) {
-            desconectarObserverLazyCards();
-            cardsVisiveis = [];
-            cursorCardsVisiveis = 0;
-            cardsContainer.classList.remove('modo-tabela');
-            cardsContainer.innerHTML = '<div class="loading-cards"><span class="loading"></span> Carregando dados da API...</div>';
-        }
-    } else {
-        btnAtualizar.disabled = false;
-        btnAtualizar.innerHTML = '<span>↻</span> Atualizar dados';
+    .auto-refresh-box {
+        width: 100%;
     }
-}
 
-function mostrarErro(mensagem) {
-    desconectarObserverLazyCards();
-    cardsVisiveis = [];
-    cursorCardsVisiveis = 0;
-    cardsContainer.classList.remove('modo-tabela');
-    cardsContainer.innerHTML = `<div class="loading-cards" style="color: #d42f4a;">${escapeHtml(mensagem)}</div>`;
+    .kpi-container {
+        grid-template-columns: 1fr;
+    }
+
+    .cards-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .pn-info {
+        grid-template-columns: 1fr;
+    }
+
+    .pn-topbar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
 }
