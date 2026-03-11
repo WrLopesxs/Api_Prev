@@ -1068,6 +1068,35 @@ mark {
     gap: 16px;
 }
 
+.consumo-page {
+    margin-top: 16px;
+}
+
+.pagina-consumo-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.pagina-consumo-topbar h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: 1.35rem;
+}
+
+.pagina-consumo-topbar p {
+    margin: 6px 0 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.pagina-consumo-voltar {
+    min-width: 190px;
+    white-space: nowrap;
+}
+
 .consumo-cascata-filtros {
     margin-top: 12px;
 }
@@ -1079,6 +1108,11 @@ mark {
     gap: 14px;
     flex-wrap: wrap;
     margin-top: 12px;
+}
+
+.consumo-print-btn {
+    white-space: nowrap;
+    min-width: 170px;
 }
 
 .consumo-select-wrap {
@@ -1104,6 +1138,15 @@ mark {
     height: 420px !important;
     position: relative;
     z-index: 1;
+}
+
+.pagina-consumo-ativa .container {
+    width: min(98%, 1820px);
+}
+
+.pagina-consumo-ativa .consumo-chart-wrap canvas {
+    min-height: 540px;
+    height: min(72vh, 860px) !important;
 }
 
 .consumo-chart-wrap {
@@ -1300,8 +1343,23 @@ mark {
         min-width: 0;
     }
 
+    .pagina-consumo-topbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .pagina-consumo-voltar {
+        width: 100%;
+        min-width: 0;
+    }
+
     .consumo-chart-wrap canvas {
         height: 320px !important;
+    }
+
+    .pagina-consumo-ativa .consumo-chart-wrap canvas {
+        min-height: 0;
+        height: 420px !important;
     }
 }
 
