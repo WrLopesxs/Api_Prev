@@ -1,5 +1,5 @@
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbze61HatBKb15biqGaHebWwxXB2HAc9PZT2ckVl6vDTSDSi4pkrE8kimhVFi82taIse/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycby2o3yJKqRmz6fpscHl-KA-V0exeH6pudIlHRob9aD-3MYr0fC8AzzvJxGFgcfrzXM8/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
 const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
 const DEBOUNCE_BUSCA_MS = 280;
@@ -25,6 +25,7 @@ let limitePnGraficoConsumo = 'todos';
 let pnSelecionadoGraficoConsumo = 'todos';
 let handlerHoverGraficoConsumo = null;
 let ultimoHoverTooltipConsumo = '';
+let mostrarDataFimExataNaImpressaoConsumo = false;
 let buscaDebounceTimer = null;
 let cardsVisiveis = [];
 let cursorCardsVisiveis = 0;
@@ -34,6 +35,7 @@ let ultimoFingerprintModelos = '';
 let carregamentoEmAndamento = false;
 let limiteSegurancaGraficoAplicado = false;
 let totalItensGraficoAntesLimite = 0;
+let paginaConsumoInicializada = false;
 
 let filtros = {
     modelo: 'todos',
@@ -75,6 +77,10 @@ const modalDetalhes = document.getElementById('modalDetalhes');
 const modalTitulo = document.getElementById('modalTitulo');
 const modalBody = document.getElementById('modalBody');
 const modalContent = modalDetalhes?.querySelector('.modal-content');
+const filtrosContainer = document.querySelector('.filtros-container');
+const kpiContainer = document.getElementById('kpiContainer');
+const paginaConsumoContainer = document.getElementById('paginaConsumoContainer');
+const modoPaginaConsumo = new URLSearchParams(window.location.search).get('view') === 'consumo';
 
 const btnTema = document.getElementById('btnTema');
 const temaIcone = document.getElementById('temaIcone');
@@ -82,6 +88,7 @@ const temaLabel = document.getElementById('temaLabel');
 const btnModoEconomico = document.getElementById('btnModoEconomico');
 
 document.addEventListener('DOMContentLoaded', () => {
+    configurarModoPaginaConsumo();
     inicializarTema();
     inicializarModoEconomico();
     configurarEventos();
@@ -134,7 +141,7 @@ function configurarEventos() {
     });
 
     btnLimparFiltros.addEventListener('click', limparFiltros);
-    btnGerarGraficoConsumo.addEventListener('click', abrirModalGraficoConsumo);
+    btnGerarGraficoConsumo.addEventListener('click', abrirPaginaGraficoConsumo);
     btnExportarPdf.addEventListener('click', exportarPDF);
     btnPausarAutoRefresh.addEventListener('click', alternarPausaAutoRefresh);
 
@@ -181,6 +188,32 @@ function configurarEventos() {
 
     atualizarTextoModoVisao();
     atualizarBotaoAutoRefresh();
+}
+
+function configurarModoPaginaConsumo() {
+    if (!modoPaginaConsumo || !paginaConsumoContainer) {
+        return;
+    }
+
+    document.body.classList.add('pagina-consumo-ativa');
+    document.title = 'Toyota - Gráfico de consumo por ferramenta';
+    filtrosContainer?.classList.add('hidden');
+    kpiContainer?.classList.add('hidden');
+    cardsContainer?.classList.add('hidden');
+    paginaConsumoContainer.classList.remove('hidden');
+}
+
+function abrirPaginaGraficoConsumo() {
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', 'consumo');
+    window.location.href = `${url.pathname}?${url.searchParams.toString()}${url.hash}`;
+}
+
+function voltarParaDashboard() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('view');
+    const search = url.searchParams.toString();
+    window.location.href = `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
 }
 
 function inicializarTema() {
@@ -368,6 +401,11 @@ function aplicarFiltros() {
 
     atualizarKPIs();
     atualizarContadorResultados();
+    if (modoPaginaConsumo) {
+        renderizarPaginaGraficoConsumo();
+        return;
+    }
+
     renderizarCards();
 }
 
@@ -870,10 +908,42 @@ function abrirModal(pn) {
     modalDetalhes.classList.add('mostrar');
 }
 
+function criarConteudoPaginaGraficoConsumo() {
+    return `
+        <div class="pagina-consumo-topbar">
+            <div>
+                <h2>Gráfico de consumo por ferramenta</h2>
+                <p>Visualização em tela cheia para análise e impressão.</p>
+            </div>
+            <button class="btn-acao pagina-consumo-voltar" id="btnVoltarDashboard" type="button">Voltar ao dashboard</button>
+        </div>
+        ${criarConteudoModalGraficoConsumo()}
+    `;
+}
+
+function renderizarPaginaGraficoConsumo() {
+    if (!modoPaginaConsumo || !paginaConsumoContainer) {
+        return;
+    }
+
+    if (!paginaConsumoInicializada) {
+        destruirGraficosModal();
+        filtroModeloGraficoConsumo = filtros.modelo !== 'todos' ? filtros.modelo : 'todos';
+        limitePnGraficoConsumo = LIMITE_PADRAO_GRAFICO_CONSUMO;
+        pnSelecionadoGraficoConsumo = 'todos';
+        paginaConsumoContainer.innerHTML = criarConteudoPaginaGraficoConsumo();
+        document.getElementById('btnVoltarDashboard')?.addEventListener('click', voltarParaDashboard);
+        configurarFiltroModalGraficoConsumo();
+        paginaConsumoInicializada = true;
+    }
+
+    renderizarGraficoConsumo();
+}
+
 function abrirModalGraficoConsumo() {
     const itensDisponiveis = dadosFiltrados.filter((item) => itemPodeAparecerNoGraficoConsumo(item));
     if (itensDisponiveis.length === 0) {
-        alert('Nenhum part number com estoque e consumo por hora disponível para gerar o gráfico.');
+        alert('Nenhuma ferramenta com estoque e consumo por hora disponível para gerar o gráfico.');
         return;
     }
 
@@ -882,7 +952,7 @@ function abrirModalGraficoConsumo() {
     limitePnGraficoConsumo = LIMITE_PADRAO_GRAFICO_CONSUMO;
     pnSelecionadoGraficoConsumo = 'todos';
     modalContent?.classList.add('modal-consumo');
-    modalTitulo.textContent = 'Gráfico de consumo por part number';
+    modalTitulo.textContent = 'Gráfico de consumo por ferramenta';
     modalBody.innerHTML = criarConteudoModalGraficoConsumo();
     modalDetalhes.classList.add('mostrar');
     configurarFiltroModalGraficoConsumo();
@@ -891,6 +961,7 @@ function abrirModalGraficoConsumo() {
 
 function criarConteudoModalGraficoConsumo() {
     const modelos = obterModelosGraficoConsumo();
+    const mostrarSeletorFerramenta = !modoPaginaConsumo;
     const botoesModelo = [
         `<button class="filtro-btn ${filtroModeloGraficoConsumo === 'todos' ? 'ativo' : ''}" data-modelo-grafico="todos">Todos</button>`,
         ...modelos.map((modelo) => `
@@ -904,13 +975,13 @@ function criarConteudoModalGraficoConsumo() {
         <div class="modal-details consumo-modal">
             <div class="detail-section">
                 <h4>Filtro em cascata por modelo</h4>
-                <div class="trend-chart-subtitle">Selecione o modelo para reorganizar o consumo por part number.</div>
+                <div class="trend-chart-subtitle">Selecione o modelo para reorganizar o consumo por ferramenta.</div>
                 <div class="filtro-buttons consumo-cascata-filtros" id="filtroModeloGraficoConsumo">${botoesModelo}</div>
             </div>
 
             <div class="detail-section" id="blocoLimiteGraficoConsumo">
-                <h4>Quantidade de PN no gráfico</h4>
-                <div class="trend-chart-subtitle">Defina quantos part numbers serão exibidos para manter boa performance.</div>
+                <h4>Quantidade de ferramentas no gráfico</h4>
+                <div class="trend-chart-subtitle">Defina quantas ferramentas serão exibidas para manter boa performance.</div>
                 <div class="consumo-toolbar">
                     <div class="filtro-buttons consumo-cascata-filtros" id="filtroLimiteGraficoConsumo">
                         <button class="filtro-btn ${limitePnGraficoConsumo === '5' ? 'ativo' : ''}" data-limite-grafico="5">5</button>
@@ -918,17 +989,20 @@ function criarConteudoModalGraficoConsumo() {
                         <button class="filtro-btn ${limitePnGraficoConsumo === '20' ? 'ativo' : ''}" data-limite-grafico="20">20</button>
                         <button class="filtro-btn ${limitePnGraficoConsumo === 'todos' ? 'ativo' : ''}" data-limite-grafico="todos">Todos</button>
                     </div>
+                    ${mostrarSeletorFerramenta ? `
                     <div class="consumo-select-wrap">
-                        <label class="consumo-select-label" for="selectPnGraficoConsumo">PN</label>
-                        <select id="selectPnGraficoConsumo" class="auto-refresh-select consumo-select"></select>
+                        <label class="consumo-select-label" for="selectFerramentaGraficoConsumo">Ferramenta</label>
+                        <select id="selectFerramentaGraficoConsumo" class="auto-refresh-select consumo-select"></select>
                     </div>
+                    ` : ''}
+                    <button class="btn-acao consumo-print-btn" id="btnImprimirGraficoConsumo" type="button">Imprimir gráfico</button>
                 </div>
             </div>
 
             <div class="trend-chart-wrap consumo-chart-wrap">
-                <h4>Curva de consumo por part number</h4>
+                <h4>Curva de consumo por ferramenta</h4>
                 <div class="trend-chart-subtitle" id="graficoConsumoResumo"></div>
-                <canvas id="graficoConsumoCanvas" aria-label="Gráfico de consumo por part number"></canvas>
+                <canvas id="graficoConsumoCanvas" aria-label="Gráfico de consumo por ferramenta"></canvas>
             </div>
 
             <div class="detail-section">
@@ -942,7 +1016,8 @@ function criarConteudoModalGraficoConsumo() {
 function configurarFiltroModalGraficoConsumo() {
     const filtroEl = document.getElementById('filtroModeloGraficoConsumo');
     const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
-    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
+    const selectPnEl = document.getElementById('selectFerramentaGraficoConsumo');
+    const btnImprimirGraficoConsumo = document.getElementById('btnImprimirGraficoConsumo');
     if (!filtroEl) {
         return;
     }
@@ -978,6 +1053,12 @@ function configurarFiltroModalGraficoConsumo() {
         pnSelecionadoGraficoConsumo = e.target.value || 'todos';
         renderizarGraficoConsumo();
     });
+
+    btnImprimirGraficoConsumo?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        imprimirGraficoConsumo();
+    });
 }
 
 function obterModelosGraficoConsumo() {
@@ -987,6 +1068,16 @@ function obterModelosGraficoConsumo() {
             .map((item) => item.modelo)
             .filter(Boolean)
     )].sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+}
+
+function obterNomeFerramentaConsumo(item) {
+    const ferramenta = item?.ferramenta;
+    if (ferramenta === null || ferramenta === undefined) {
+        return String(item?.pn ?? '-');
+    }
+
+    const ferramentaTexto = String(ferramenta).trim();
+    return ferramentaTexto || String(item?.pn ?? '-');
 }
 
 function obterDadosGraficoConsumo() {
@@ -1001,14 +1092,14 @@ function obterDadosGraficoConsumo() {
             return diferencaConsumo;
         }
 
-        return String(a.pn).localeCompare(String(b.pn), 'pt-BR');
+        return obterNomeFerramentaConsumo(a).localeCompare(obterNomeFerramentaConsumo(b), 'pt-BR');
     });
 
     totalItensGraficoAntesLimite = itensOrdenados.length;
     limiteSegurancaGraficoAplicado = false;
 
     if (pnSelecionadoGraficoConsumo !== 'todos') {
-        itensOrdenados = itensOrdenados.filter((item) => String(item.pn) === String(pnSelecionadoGraficoConsumo));
+        itensOrdenados = itensOrdenados.filter((item) => obterNomeFerramentaConsumo(item) === String(pnSelecionadoGraficoConsumo));
         totalItensGraficoAntesLimite = itensOrdenados.length;
         return itensOrdenados;
     }
@@ -1031,7 +1122,7 @@ function obterPnDisponiveisGraficoConsumo() {
         ? itensBase
         : itensBase.filter((item) => item.modelo === filtroModeloGraficoConsumo);
 
-    return [...new Set(itensModelo.map((item) => String(item.pn)).filter(Boolean))]
+    return [...new Set(itensModelo.map((item) => obterNomeFerramentaConsumo(item)).filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
@@ -1050,7 +1141,7 @@ function renderizarGraficoConsumo() {
         : `modelo ${filtroModeloGraficoConsumo}`;
     const blocoLimiteEl = document.getElementById('blocoLimiteGraficoConsumo');
     const limiteEl = document.getElementById('filtroLimiteGraficoConsumo');
-    const selectPnEl = document.getElementById('selectPnGraficoConsumo');
+    const selectPnEl = document.getElementById('selectFerramentaGraficoConsumo');
     const pnDisponiveis = obterPnDisponiveisGraficoConsumo();
 
     if (blocoLimiteEl) {
@@ -1069,7 +1160,7 @@ function renderizarGraficoConsumo() {
 
     if (selectPnEl) {
         const opcoesPn = [
-            '<option value="todos">Todos os PN</option>',
+            '<option value="todos">Todas as ferramentas</option>',
             ...pnDisponiveis.map((pn) => `<option value="${escapeHtml(pn)}" ${pnSelecionadoGraficoConsumo === pn ? 'selected' : ''}>${escapeHtml(pn)}</option>`)
         ];
         selectPnEl.innerHTML = opcoesPn.join('');
@@ -1099,16 +1190,16 @@ function renderizarGraficoConsumo() {
     const textColor = rootStyle.getPropertyValue('--text').trim() || '#0f2036';
 
     const avisoSeguranca = limiteSegurancaGraficoAplicado
-        ? ` Exibição limitada automaticamente em ${LIMITE_SEGURANCA_GRAFICO_CONSUMO} PN para manter desempenho.`
+        ? ` Exibição limitada automaticamente em ${LIMITE_SEGURANCA_GRAFICO_CONSUMO} ferramentas para manter desempenho.`
         : '';
-    resumoEl.textContent = `${itens.length} part number(s) exibidos para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, PN ${pnSelecionadoGraficoConsumo}` : ''}${limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.${avisoSeguranca}`;
+    resumoEl.textContent = `${itens.length} ferramenta(s) exibidas para ${modeloTexto}${pnSelecionadoGraficoConsumo !== 'todos' ? `, ferramenta ${pnSelecionadoGraficoConsumo}` : ''}${limitePnGraficoConsumo !== 'todos' && pnSelecionadoGraficoConsumo === 'todos' ? `, limite ${limitePnGraficoConsumo}` : ''}.${avisoSeguranca}`;
     cardsResumoEl.innerHTML = `
         <div class="trend-stat">
             <span class="trend-stat-label">Modelo selecionado</span>
             <span class="trend-stat-value">${escapeHtml(filtroModeloGraficoConsumo === 'todos' ? 'Todos' : filtroModeloGraficoConsumo)}</span>
         </div>
         <div class="trend-stat">
-            <span class="trend-stat-label">Total de PN</span>
+            <span class="trend-stat-label">Total de ferramentas</span>
             <span class="trend-stat-value">${itens.length}${totalItensGraficoAntesLimite > itens.length ? ` de ${totalItensGraficoAntesLimite}` : ''}</span>
         </div>
         <div class="trend-stat">
@@ -1117,7 +1208,7 @@ function renderizarGraficoConsumo() {
         </div>
         <div class="trend-stat">
             <span class="trend-stat-label">Acaba primeiro</span>
-            <span class="trend-stat-value">${escapeHtml(String(itemMaisCritico.pn))} (${escapeHtml(formatarDataHora(new Date(itemMaisCritico.dataFim)))})</span>
+            <span class="trend-stat-value">${escapeHtml(obterNomeFerramentaConsumo(itemMaisCritico))} (${escapeHtml(formatarDataHoraCompleta(new Date(itemMaisCritico.dataFim)))})</span>
         </div>
     `;
 
@@ -1170,26 +1261,20 @@ function renderizarGraficoConsumo() {
                 }
             },
 
-           tooltip: {
-    callbacks: {
-
-        label: (context) => {
-
-            const horas = context.parsed.x.toFixed(1);
-            return `Acaba em ${horas} horas`;
-
-        },
-
-        afterLabel: (context) => {
-
-            const fim = context.dataset.metaInfo[context.dataIndex];
-
-            return `Horário: ${fim}`;
-
-        }
-
-    }
-}
+            tooltip: {
+                callbacks: {
+                    label: (context) => {
+                        const horas = context.parsed.x.toFixed(1);
+                        return `Acaba em ${horas} horas`;
+                    },
+                    afterLabel: (context) => {
+                        const fim = context.dataset?.metaInfoExato?.[context.dataIndex]
+                            || context.dataset?.metaInfo?.[context.dataIndex]
+                            || '-';
+                        return `Dia e horário exatos: ${fim}`;
+                    }
+                }
+            }
         },
 
         scales: {
@@ -1217,7 +1302,7 @@ function renderizarGraficoConsumo() {
                 },
                 title: {
                     display: true,
-                    text: 'Part Number',
+                    text: 'Ferramenta',
                     color: textColor
                 }
             }
@@ -1230,9 +1315,12 @@ function renderizarGraficoConsumo() {
     afterDatasetsDraw(chart) {
 
         const { ctx } = chart;
+        const dataset = chart.data?.datasets?.[0];
         const meta = chart.getDatasetMeta(0);
+        const datasExatas = dataset?.metaInfoExato || [];
+        const areaDireita = chart.chartArea?.right ?? chart.width;
 
-        meta.data.forEach((barra) => {
+        meta.data.forEach((barra, index) => {
 
             const x = barra.x;
             const y = barra.y;
@@ -1246,6 +1334,23 @@ function renderizarGraficoConsumo() {
             ctx.lineWidth = 2;
             ctx.strokeStyle = '#111';
             ctx.stroke();
+
+            if (mostrarDataFimExataNaImpressaoConsumo) {
+                const textoFim = String(datasExatas[index] || '-');
+                ctx.font = '600 10px Arial, sans-serif';
+                ctx.fillStyle = textColor || '#0f2036';
+                ctx.textBaseline = 'middle';
+
+                const larguraTexto = ctx.measureText(textoFim).width;
+                const espacoDireita = areaDireita - (x + 10);
+                if (espacoDireita >= larguraTexto) {
+                    ctx.textAlign = 'left';
+                    ctx.fillText(textoFim, x + 8, y);
+                } else {
+                    ctx.textAlign = 'right';
+                    ctx.fillText(textoFim, Math.max(8, x - 8), y);
+                }
+            }
 
             ctx.restore();
 
@@ -1379,7 +1484,7 @@ function gerarDatasetsGraficoConsumo(itens) {
         new Date(a.dataFim) - new Date(b.dataFim)
     );
 
-    const labels = itensOrdenados.map(item => item.pn);
+    const labels = itensOrdenados.map((item) => obterNomeFerramentaConsumo(item));
 
     const valores = itensOrdenados.map(item => {
 
@@ -1393,6 +1498,9 @@ function gerarDatasetsGraficoConsumo(itens) {
 
     const horarios = itensOrdenados.map(item =>
         formatarDataHora(new Date(item.dataFim))
+    );
+    const horariosExatos = itensOrdenados.map(item =>
+        formatarDataHoraCompleta(new Date(item.dataFim))
     );
 
     const cores = itensOrdenados.map(item => {
@@ -1411,10 +1519,59 @@ function gerarDatasetsGraficoConsumo(itens) {
         backgroundColor: cores,
         borderRadius: 6,
         barThickness: 18,
-        metaInfo: horarios
+        metaInfo: horarios,
+        metaInfoExato: horariosExatos
     }];
 
-    return { labels, datasets };
+    return { labels, datasets, itensOrdenados };
+}
+
+function imprimirGraficoConsumo() {
+    const itens = obterDadosGraficoConsumo();
+    if (!graficoConsumoChart || !graficoConsumoChart.canvas || itens.length === 0) {
+        alert('Não há dados do gráfico de consumo para imprimir.');
+        return;
+    }
+
+    const popup = window.open('', '_blank');
+    if (!popup) {
+        alert('Não foi possível abrir a janela de impressão. Verifique bloqueio de pop-up.');
+        return;
+    }
+
+    mostrarDataFimExataNaImpressaoConsumo = true;
+    graficoConsumoChart.update('none');
+    const imagemGrafico = graficoConsumoChart.toBase64Image();
+    mostrarDataFimExataNaImpressaoConsumo = false;
+    graficoConsumoChart.update('none');
+
+    const resumoAtual = document.getElementById('graficoConsumoResumo')?.textContent || '';
+
+    popup.document.write(`
+        <html>
+        <head>
+            <title>Gráfico de Consumo - ${gerarNomeArquivo('consumo_ferramenta')}</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; color: #111; }
+                h1 { margin: 0 0 8px; font-size: 20px; }
+                .meta { margin: 0 0 14px; color: #444; font-size: 12px; }
+                .chart-wrap { border: 1px solid #ddd; padding: 10px; border-radius: 8px; background: #fff; }
+                .chart-wrap img { width: 100%; height: auto; display: block; }
+            </style>
+        </head>
+        <body>
+            <h1>Gráfico de consumo por ferramenta</h1>
+            <div class="meta">${escapeHtml(resumoAtual)}</div>
+            <div class="meta">Na imagem, cada barra exibe o dia e horário exatos de fim.</div>
+            <div class="chart-wrap">
+                <img src="${imagemGrafico}" alt="Gráfico de consumo por ferramenta para impressão" />
+            </div>
+        </body>
+        </html>
+    `);
+    popup.document.close();
+    popup.focus();
+    popup.print();
 }
 
 function fecharModal() {
@@ -1966,6 +2123,21 @@ function formatarDataHora(data) {
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit'
+    });
+}
+
+function formatarDataHoraCompleta(data) {
+    if (!(data instanceof Date) || Number.isNaN(data.getTime())) {
+        return '-';
+    }
+
+    return data.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
     });
 }
 
