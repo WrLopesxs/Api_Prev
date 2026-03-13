@@ -1,5 +1,5 @@
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbyQN1SkwQ3keCveF9Z14JQHyiAP0ciNaaZs3AymteL2-8bjHP4BeCtq_MNdfYB2LLCX/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyiXP5RjhG8jye-nRj6tRZ2lsw6yT0Pcp1tpSRFbVHpMDFerI4GmFbohMLVv6vDoyL7/exec';
 const STORAGE_THEME_KEY = 'dashboard-theme';
 const STORAGE_ECONOMICO_KEY = 'dashboard-economico';
 const DEBOUNCE_BUSCA_MS = 280;
@@ -1916,19 +1916,17 @@ function numeroSeguro(valor, fallback = 0) {
 function normalizarItemEstoque(item) {
     const estoqueFisico = Number(item?.estoqueFisico);
     const estoqueAntigo = Number(item?.estoque);
+
     const estoquePrincipal = Number.isFinite(estoqueFisico)
         ? estoqueFisico
         : (Number.isFinite(estoqueAntigo) ? estoqueAntigo : 0);
-    const estoqueSistemaRaw = Number(item?.estoqueSistema);
-    const estoqueSistema = Number.isFinite(estoqueSistemaRaw) ? estoqueSistemaRaw : null;
-    const divergenciaRaw = Number(item?.divergencia);
+
+    const estoqueSistema = item?.estoqueSistema ?? null;
+
     let divergencia = null;
+
     if (estoqueSistema !== null) {
-        divergencia = estoqueSistema === 0
-            ? estoquePrincipal
-            : (estoquePrincipal - estoqueSistema);
-    } else if (Number.isFinite(divergenciaRaw)) {
-        divergencia = divergenciaRaw;
+        divergencia = estoquePrincipal - estoqueSistema;
     }
 
     return {
